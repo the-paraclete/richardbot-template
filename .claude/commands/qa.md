@@ -52,3 +52,37 @@ Never report PASS for something you didn't actually test.
 4. **You report facts.** "Test X failed with output Y" not "I think maybe."
 5. **You clean up after yourself.** Delete any temp files YOU created.
 6. **You verify the dev's cleanup.** No leftover tmp files, debug prints, commented-out blocks.
+
+## Plant findings the work uncovered
+
+If during your pass you noticed something **outside the scope of this work**
+that should survive the conversation — a tangential bug, a friction
+observation, a runbook waypoint, a rule the operator articulated — plant it
+as a memory note before reporting.
+
+```bash
+richardbot-init plant <kebab-case-name-with-date> \
+  --type friction \
+  --description "<one-line summary, ≤200 chars>" \
+  --triggers "tok1, tok2, tok3" \
+  --body-stdin <<MD
+# Title
+
+## What
+<concrete description with file:line citations>
+
+## Why it matters
+<one paragraph; not for THIS conversation but for next-time>
+MD
+```
+
+**Plant when:** tangential finding you can't fix here, friction you'd want
+next-time-you to know cold, runbook waypoint, new operator rule, decision
+under uncertainty worth a falsifiable trail.
+
+**Don't plant when:** the work-of-the-moment itself (that's the commit message
+or verdict), ephemeral state, speculation without grounding, or a topic
+already covered by an existing seed (update that instead).
+
+Report the planted note's filename in your verdict — the operator sees both
+the work and what survived it.

@@ -7,6 +7,7 @@
 #   richardbot-init survey         [target-dir]                   # detect stack + propose surface chunks
 #   richardbot-init seed           [target-dir] [opts]            # auto-generate surface fragments via LLM
 #   richardbot-init rescan         [target-dir] [opts]            # refresh .richardbot-memory/ bug findings (periodic)
+#   richardbot-init plant          [target-dir] <name> [opts]     # write a single memory note (deliberate planting)
 #   richardbot-init pack           <list|add|remove> [target-dir] [name]   # manage rule packs
 #   richardbot-init copilot-mirror [target-dir]                   # generate .github/copilot-instructions.md + .github/instructions/
 #   richardbot-init verify         [target-dir]                   # check framework integrity (hooks + settings)
@@ -1065,6 +1066,142 @@ if skipped:
 PYEOF
 }
 
+# ── plant ───────────────────────────────────────────────────────────────────
+# Deliberate AI-or-operator memory write. Writes a markdown file under
+# .richardbot-memory/<name>.md with the supplied frontmatter (type, triggers,
+# description, date) and body, then optionally re-runs copilot-mirror so the
+# new note reaches Copilot consumers.
+#
+# Designed to be called from role files: when dev / qa / scan finds something
+# worth persisting that's not the work-of-the-moment (a tangential bug, a
+# friction observation, a runbook waypoint), plant it instead of letting it
+# evaporate when the conversation ends.
+#
+# Two body-input modes:
+#   --body-stdin       read body from stdin
+#   --body "text"      inline body argument
+#
+# Required:
+#   <name>             slug (lowercase-kebab-case; .md auto-appended)
+#   --description X    one-line summary (≤200 chars; used in frontmatter)
+#
+# Optional:
+#   --type T           friction | reference | runbook | findings (default: friction)
+#   --triggers "a,b,c" comma-separated prompt-trigger tokens (≥3 recommended)
+#   --no-mirror        skip auto re-run of copilot-mirror
+#   --force            overwrite if file already exists
+do_plant() {
+  local name=""
+  local description=""
+  local type="friction"
+  local triggers_csv=""
+  local body_text=""
+  local body_stdin="0"
+  local run_mirror="1"
+  local force="0"
+
+  shift 2 2>/dev/null || true
+  name="${1:-}"
+  [ -n "$name" ] && shift
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --description) description="$2"; shift 2 ;;
+      --type)        type="$2"; shift 2 ;;
+      --triggers)    triggers_csv="$2"; shift 2 ;;
+      --body)        body_text="$2"; shift 2 ;;
+      --body-stdin)  body_stdin="1"; shift ;;
+      --no-mirror)   run_mirror="0"; shift ;;
+      --force)       force="1"; shift ;;
+      *)             echo "⚠ unknown plant flag: $1" >&2; shift ;;
+    esac
+  done
+
+  if [ -z "$name" ] || [ -z "$description" ]; then
+    cat >&2 <<EOF
+⚠ Usage: richardbot-init plant <name> --description "<line>" [opts]
+
+Required:
+  <name>                 kebab-case slug (e.g. cart-discount-edge-2026-05-15)
+  --description "<line>" one-line summary used in frontmatter (≤200 chars)
+
+Optional:
+  --type T               friction | reference | runbook | findings (default: friction)
+  --triggers "a,b,c"     comma-separated prompt-trigger tokens
+  --body "<text>"        inline body text (mutually exclusive with --body-stdin)
+  --body-stdin           read body markdown from stdin
+  --no-mirror            skip the auto re-run of copilot-mirror
+  --force                overwrite an existing file with the same name
+
+Example:
+  richardbot-init plant cart-discount-stacking-bug \\
+    --type friction \\
+    --description "Cart discount stacking applies twice on bundle items" \\
+    --triggers "discount, stacking, bundle, cart" \\
+    --body-stdin <<MD
+  # Cart discount double-stacks on bundle items
+
+  ## Repro
+  ...
+  MD
+EOF
+    exit 2
+  fi
+
+  [ -d "$target/.richardbot-memory" ] || mkdir -p "$target/.richardbot-memory"
+  local fname
+  fname="$(printf '%s' "$name" | sed 's/\.md$//')"
+  local out_path="$target/.richardbot-memory/${fname}.md"
+
+  if [ -e "$out_path" ] && [ "$force" != "1" ]; then
+    echo "⚠ Already exists: $out_path  (pass --force to overwrite)" >&2
+    exit 2
+  fi
+
+  if [ "$body_stdin" = "1" ]; then
+    body_text="$(cat)"
+  fi
+
+  local today
+  today="$(date +%Y-%m-%d)"
+
+  # Build triggers block (YAML list under triggers.prompt)
+  local triggers_block=""
+  if [ -n "$triggers_csv" ]; then
+    triggers_block="triggers:"$'\n'"  prompt:"
+    local OLD_IFS="$IFS"
+    IFS=","
+    for tok in $triggers_csv; do
+      tok="$(printf '%s' "$tok" | sed 's/^ *//;s/ *$//')"
+      [ -z "$tok" ] && continue
+      triggers_block="${triggers_block}"$'\n'"    - \"${tok}\""
+    done
+    IFS="$OLD_IFS"
+  fi
+
+  {
+    echo "---"
+    printf 'description: %s\n' "$description"
+    printf 'date: %s\n' "$today"
+    printf 'type: %s\n' "$type"
+    if [ -n "$triggers_block" ]; then
+      printf '%s\n' "$triggers_block"
+    fi
+    echo "---"
+    echo
+    if [ -n "$body_text" ]; then
+      printf '%s\n' "$body_text"
+    fi
+  } > "$out_path"
+
+  echo "✓ Planted $out_path ($(wc -l < "$out_path") lines)" >&2
+
+  if [ "$run_mirror" = "1" ] && [ -f "$target/.github/copilot-instructions.md" ]; then
+    echo "→ Refreshing copilot mirror..." >&2
+    do_copilot_mirror
+  fi
+}
+
 do_verify() {
   local manifest="$target/.claude/INSTALLED"
   if [ ! -f "$manifest" ]; then
@@ -1440,6 +1577,7 @@ case "$mode" in
   survey)          do_survey ;;
   seed)            do_seed "$@" ;;
   rescan)          do_rescan "$@" ;;
+  plant)           do_plant "$@" ;;
   pack)            do_pack "$@" ;;
   copilot-mirror)  do_copilot_mirror ;;
   import-overview) do_import_overview "$@" ;;
