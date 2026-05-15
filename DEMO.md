@@ -43,7 +43,7 @@ richardbot-init init
 ls .claude/ .richardbot-memory/ .github/
 ```
 
-**Watch for.** Three new directories. `.claude/rules/`, `.claude/hooks/`, `.claude/commands/`, `.richardbot-memory/`, `.github/copilot-instructions.md`. Note: rules are tiny fragments (≤80 lines each), not a wall.
+**Watch for.** Three new directories. `.claude/rules/`, `.claude/hooks/`, `.claude/commands/`, `.richardbot-memory/`, `.github/copilot-instructions.md`. Note: rules are tiny fragments (≤80 lines each), not a wall. The baseline install ships 4 universal rules; layer in `corporate-baseline` for 9 more generic-corporate fragments; layer in a stack pack for 5-7 more.
 
 ```bash
 ls -la .claude/rules/
@@ -186,24 +186,30 @@ head -30 .github/copilot-instructions.md
 
 ---
 
-## Act 7 — Packs: opinionated stacks (1 min)
+## Act 7 — Packs: layered discipline (1 min)
 
 **Setup.** A repo where richardbot is installed but no packs yet.
 
-**Say.** *"Some teams want everything pre-decided. We ship `shopify-theme`, `nextjs-app`, others. Each is 10-15 fragments tuned to the stack's failure modes."*
+**Say.** *"Packs come in two layers. Layer 0 is `corporate-baseline` — generic-corporate code-review discipline that almost every codebase wants: function size, security baseline, ES6+ standards, WCAG AA accessibility, regression-risk checklist, async error handling. Layer 1 is stack-specific — `shopify-theme`, `nextjs-app`, `react-spa`, etc. Each adds framework-specific overlay on top of the baseline. They compose."*
 
 **Run.**
 
 ```bash
 richardbot-init pack list
+# corporate-baseline   (Layer 0 — generic)
+# shopify-theme        (Layer 1 — Shopify OS 2.0)
+
+# Recommended combo for a Shopify theme:
+richardbot-init pack add corporate-baseline
 richardbot-init pack add shopify-theme
+
 ls .claude/rules/
-# 15 new fragments: liquid-conventions, vue3-deprecations, etc.
+# 9 baseline fragments + 6 shopify-specific fragments + your own surface-*.md files
 ```
 
-**Watch for.** New rule fragments matching the stack. Each was derived from a real JIRA bug-review criterion the team already uses.
+**Watch for.** Two layers of new rule fragments — baseline ones (code-quality.md, security.md, accessibility-baseline.md, etc.) and stack ones (vue3-standards.md, liquid-conventions.md, shopify-cart-api.md, etc.). Each was derived from real production-review criteria the team already uses.
 
-**Tire-kick.** *"Packs are opinionated. If your team has different conventions, fork the pack — they're just markdown."*
+**Tire-kick.** *"Packs are opinionated. The split is deliberate: `corporate-baseline` rules are stable across stacks; stack packs evolve with the framework. If your team has different conventions, fork the pack — they're just markdown. The mechanism (frontmatter triggers + loader hook) doesn't care what's in the files."*
 
 ---
 

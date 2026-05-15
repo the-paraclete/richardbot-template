@@ -139,15 +139,30 @@ philosophy-com.myshopify.com/
 │   │   ├── protect-paths.sh            ← PreToolUse / Edit|Write
 │   │   └── session-orient.sh           ← SessionStart
 │   └── rules/
-│       ├── accessibility.md             ← alwaysApply
-│       ├── code-quality.md              ← alwaysApply
-│       ├── conventions.md               ← alwaysApply
-│       ├── es6-vue3-standards.md        ← alwaysApply
-│       ├── error-handling.md            ← triggers: try, catch, async, fetch…
+│       │   ─── baseline (always shipped) ───
+│       ├── conventions.md               ← alwaysApply — repo coding/commit/PR rules
+│       ├── secrets.md                   ← alwaysApply — secret handling
+│       ├── client-repo.md               ← what this repo IS
+│       ├── pr-flow.md                   ← how PRs land here
+│       │
+│       │   ─── from pack: corporate-baseline (Layer 0) ───
+│       ├── code-quality.md              ← alwaysApply — function size, nesting, naming
+│       ├── security.md                  ← alwaysApply — XSS, secrets in source, PII
+│       ├── es6-standards.md             ← alwaysApply — modern JS patterns
+│       ├── accessibility-baseline.md    ← alwaysApply — WCAG AA floor
+│       ├── js-deprecations.md           ← triggers: var, keyCode, XMLHttpRequest…
+│       ├── html-anti-patterns.md        ← triggers: xlink:href, <a>, anchor…
+│       ├── performance-baseline.md      ← triggers: scroll, resize, setInterval…
+│       ├── error-handling-async.md      ← triggers: try, catch, async, fetch…
+│       ├── regression-risk.md           ← triggers: delete, refactor, modify…
+│       │
+│       │   ─── from pack: shopify-theme (Layer 1) ───
+│       ├── architecture.md              ← Vue mount, Liquid → Vue data flow
+│       ├── vue3-standards.md            ← alwaysApply — props/emits/computed
+│       ├── vue3-deprecations.md         ← Vue 2 → Vue 3 migration patterns
 │       ├── liquid-conventions.md        ← triggers: liquid, snippet, section…
-│       ├── shopify-cart-api.md          ← triggers: cart, line item, checkout…
 │       ├── tailwind-itcss.md            ← triggers: tailwind, scss, itcss…
-│       ├── … (~17 cross-cutting policy fragments) …
+│       ├── shopify-cart-api.md          ← triggers: cart, line item, checkout…
 │       │
 │       ├── surface-vue-components-cart.md      ← triggers + globs
 │       ├── surface-vue-components-product.md   ← triggers + globs

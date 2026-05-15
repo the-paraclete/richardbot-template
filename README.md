@@ -16,7 +16,10 @@ when their triggers fire.
 │   │   └── prompt-fragment-loader.sh    # UserPromptSubmit hook (bash + jq)
 │   ├── rules/                           # trigger-loaded context fragments
 │   │   ├── README.md                    # authoring shape
-│   │   ├── conventions.md               # always-loaded
+│   │   ├── conventions.md               # always-loaded — repo conventions
+│   │   ├── secrets.md                   # always-loaded — secret handling
+│   │   ├── client-repo.md               # always-loaded — what this repo IS
+│   │   ├── pr-flow.md                   # always-loaded — how PRs land here
 │   │   └── <your-surfaces>.md           # add one per functional surface
 │   └── commands/                        # role files for subprocess dispatch
 │       ├── architect.md                 # opus
@@ -27,6 +30,29 @@ when their triggers fire.
 └── .richardbot-memory/                   # acute project memory (writable)
     ├── README.md
     └── _recent.md
+```
+
+Plus optional **packs** layered onto the baseline. Two layers:
+
+```
+packs/
+├── corporate-baseline/                  # Layer 0 — generic-corporate (almost always installed)
+│   ├── code-quality.md                  #   function size, naming, comments
+│   ├── security.md                      #   XSS, secrets, PII, sanitization
+│   ├── es6-standards.md                 #   modern JS patterns
+│   ├── accessibility-baseline.md        #   WCAG AA floor
+│   ├── js-deprecations.md               #   var, keyCode, etc.
+│   ├── html-anti-patterns.md            #   native semantics, no a-as-button
+│   ├── performance-baseline.md          #   async/defer, throttle, cleanup, lazy
+│   ├── error-handling-async.md          #   try/catch, button-disable, timeouts
+│   └── regression-risk.md               #   deletion / modification checklist
+└── shopify-theme/                       # Layer 1 — stack-specific (Shopify OS 2.0)
+    ├── architecture.md                  #   Vue mount, Liquid → Vue data flow
+    ├── vue3-standards.md                #   props/emits/computed/Composition API
+    ├── vue3-deprecations.md             #   Vue 2 → Vue 3 patterns
+    ├── liquid-conventions.md            #   image_url, render, bounded loops
+    ├── tailwind-itcss.md                #   utility-first, ITCSS layer order
+    └── shopify-cart-api.md              #   line item keys, properties validation
 ```
 
 ## Why a separate `.richardbot-memory/` outside `.claude/`?
@@ -45,10 +71,18 @@ intent: `.claude/rules/` is human-authored, versioned config;
 bash /path/to/richardbot-template/bin/richardbot-init init      # scaffold
 bash /path/to/richardbot-template/bin/richardbot-init survey    # detect stack + propose surface chunks
 bash /path/to/richardbot-template/bin/richardbot-init update    # refresh framework files only
+
+# Add packs (layered discipline). The recommended combo for a Shopify theme:
+bash /path/to/richardbot-template/bin/richardbot-init pack add corporate-baseline
+bash /path/to/richardbot-template/bin/richardbot-init pack add shopify-theme
 ```
 
 `init` refuses to overwrite existing `CLAUDE.md` or `.claude/` — use `update`
 to refresh just the framework files (hook, settings, READMEs).
+
+`corporate-baseline` is generic-corporate code-review discipline that applies
+to any web codebase. Stack packs (`shopify-theme`, future: `nextjs-app`,
+`react-spa`, etc.) presume `corporate-baseline` is installed alongside.
 
 ## How the trigger system works
 
