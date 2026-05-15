@@ -16,7 +16,12 @@ set +e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES_DIR="${SCRIPT_DIR%/hooks}/rules"
-MAX_RULES="${RICHARDBOT_MAX_RULES_PER_TURN:-5}"
+# Separate budgets: alwaysApply rules always load (alwaysApply means "always"),
+# trigger-matched rules get their own pool. The cap on alwaysApply exists only
+# as a blast-radius safety bound; normal use should never hit it.
+MAX_ALWAYS="${RICHARDBOT_MAX_ALWAYS_PER_TURN:-25}"
+MAX_TRIGGERED="${RICHARDBOT_MAX_TRIGGERED_PER_TURN:-5}"
+MAX_RULES="${RICHARDBOT_MAX_RULES_PER_TURN:-30}"  # kept for backward-compat; safety ceiling
 MAX_BODY="${RICHARDBOT_MAX_BODY_CHARS:-4000}"
 # Memory dir lives outside .claude/ (intentionally — to dodge the sensitive-file
 # gate). The loader scans both rules + memory; memory entries get a [memory/]
@@ -123,6 +128,8 @@ prompt_mentions_glob_prefix() {
   printf '%s' "$PROMPT_LC" | grep -qF "$lc"
 }
 
+# Returns: 0 = matched on alwaysApply; 2 = matched on trigger; 1 = no match.
+# Two-tier exit codes let the caller bucket fragments without re-parsing frontmatter.
 should_load_rule() {
   local file="$1" fm tok glob always
   fm="$(extract_frontmatter "$file")"
@@ -133,26 +140,33 @@ should_load_rule() {
 
   while IFS= read -r tok; do
     [ -z "$tok" ] && continue
-    prompt_contains_token "$tok" && return 0
+    prompt_contains_token "$tok" && return 2
   done < <(extract_yaml_list "$fm" "triggers.prompt")
 
   while IFS= read -r glob; do
     [ -z "$glob" ] && continue
-    prompt_mentions_glob_prefix "$glob" && return 0
+    prompt_mentions_glob_prefix "$glob" && return 2
   done < <(extract_yaml_list "$fm" "globs")
 
   return 1
 }
 
-MATCHED=()
+# Bucket by exit code: alwaysApply (rc=0) gets its own pool, triggered (rc=2)
+# gets its own. alwaysApply listed first in output so the model sees the
+# non-negotiable rules at the top.
+MATCHED_ALWAYS=()
+MATCHED_TRIGGERED=()
 shopt -s nullglob
 for f in "$RULES_DIR"/*.md; do
-  [ "${#MATCHED[@]}" -ge "$MAX_RULES" ] && break
-  if should_load_rule "$f"; then
-    MATCHED+=("$f")
-  fi
+  should_load_rule "$f"
+  rc=$?
+  case $rc in
+    0) [ "${#MATCHED_ALWAYS[@]}" -lt "$MAX_ALWAYS" ] && MATCHED_ALWAYS+=("$f") ;;
+    2) [ "${#MATCHED_TRIGGERED[@]}" -lt "$MAX_TRIGGERED" ] && MATCHED_TRIGGERED+=("$f") ;;
+  esac
 done
 shopt -u nullglob
+MATCHED=("${MATCHED_ALWAYS[@]}" "${MATCHED_TRIGGERED[@]}")
 
 # Memory walk — separate budget, separate label. Skip README and _recent.md
 # (those aren't trigger-loaded entries; they're meta-files).

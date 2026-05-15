@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
-# richardbot-init — install / survey / seed / pack / verify / update / uninstall.
+# richardbot-init — install / survey / seed / pack / verify / update / uninstall / copilot-mirror / rescan.
 #
 # Usage:
-#   richardbot-init init      [target-dir] [--pack <name>]   # lay down .claude/, CLAUDE.md, .richardbot-memory/
-#   richardbot-init survey    [target-dir]                   # detect stack + propose surface chunks
-#   richardbot-init seed      [target-dir] [opts]            # auto-generate surface fragments via LLM
-#   richardbot-init pack      <list|add|remove> [target-dir] [name]   # manage rule packs
-#   richardbot-init verify    [target-dir]                   # check framework integrity (hooks + settings)
-#   richardbot-init update    [target-dir]                   # pull latest template; preserve project files
-#   richardbot-init uninstall [target-dir]                   # remove framework; preserve user-authored content
-#   richardbot-init nuke      [target-dir]                   # remove EVERYTHING the template installs (destructive)
+#   richardbot-init init           [target-dir] [--pack <name>] [--full] [--overview <path>] [--force]
+#                                                                # lay down skeleton; --full also seeds + rescans + mirrors
+#   richardbot-init survey         [target-dir]                   # detect stack + propose surface chunks
+#   richardbot-init seed           [target-dir] [opts]            # auto-generate surface fragments via LLM
+#   richardbot-init rescan         [target-dir] [opts]            # refresh .richardbot-memory/ bug findings (periodic)
+#   richardbot-init pack           <list|add|remove> [target-dir] [name]   # manage rule packs
+#   richardbot-init copilot-mirror [target-dir]                   # generate .github/copilot-instructions.md + .github/instructions/
+#   richardbot-init verify         [target-dir]                   # check framework integrity (hooks + settings)
+#   richardbot-init update         [target-dir]                   # pull latest template; preserve project files
+#   richardbot-init uninstall      [target-dir]                   # remove framework; preserve user-authored content
+#   richardbot-init nuke           [target-dir]                   # remove EVERYTHING the template installs (destructive)
 #   richardbot-init help
 #
 # `seed` options (after target-dir):
 #   --surface <relpath>   only seed the surface at <relpath>; output to stdout
 #   --model <name>        haiku | sonnet | opus (default: haiku)
 #   --write               write generated fragments into target/.claude/rules/
+#
+# `rescan` options (after target-dir):
+#   --surface <relpath>   rescan only that surface; default: enumerate (same heuristic as seed)
+#   --model <name>        haiku | sonnet | opus (default: haiku)
+#   --since <git-since>   restrict to surfaces touched by `git log --since=<spec>` (e.g. "7 days ago")
+#   --age-out <days>      archive .richardbot-memory/*.md older than N days (default: off)
+#   --no-mirror           skip the auto re-run of copilot-mirror after rescan
 #
 # `pack` modes:
 #   pack list [target-dir]                # list installed packs (reads .claude/PACKS)
@@ -60,10 +70,30 @@ echo
 
 # ── init ────────────────────────────────────────────────────────────────────
 do_init() {
+  # Parse init-mode flags. Positional args were already consumed by mode/target
+  # parsing at the top of the script; what remains in $@ are flags only.
+  local pack_name=""
+  local full="0"
+  local overview=""
+  local force="0"
+
+  # Skip past "init" and any positional target dir (already absorbed globally)
+  shift 1 2>/dev/null || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pack)     pack_name="${2:-}"; shift 2 ;;
+      --full)     full="1"; shift ;;
+      --overview) overview="${2:-}"; shift 2 ;;
+      --force)    force="1"; shift ;;
+      --*)        echo "⚠ unknown init flag: $1" >&2; shift ;;
+      *)          shift ;;  # silently drop positional (already consumed)
+    esac
+  done
+
   # Refuse to overwrite an existing install unless --force
-  if [ -f "$target/CLAUDE.md" ] || [ -d "$target/.claude" ]; then
+  if { [ -f "$target/CLAUDE.md" ] || [ -d "$target/.claude" ]; } && [ "$force" != "1" ]; then
     echo "⚠ Target already has CLAUDE.md or .claude/ — refusing to overwrite."
-    echo "  Use 'richardbot-init update' instead, or remove the existing setup."
+    echo "  Use 'richardbot-init update' instead, or pass --force to nuke + reinstall."
     exit 2
   fi
 
@@ -105,18 +135,99 @@ do_init() {
   project_name="$(basename "$target")"
   sed "s|<PROJECT NAME>|$project_name|g" "$TEMPLATE_ROOT/CLAUDE.md" \
     > "$target/CLAUDE.md"
+  # Bundle the tool itself + packs into the target so subsequent ops
+  # (update/verify/pack add) work standalone without depending on where
+  # the original template lives. Important for codespace / CI consumers.
+  mkdir -p "$target/bin"
+  cp "$TEMPLATE_ROOT/bin/richardbot-init" "$target/bin/richardbot-init"
+  chmod +x "$target/bin/richardbot-init"
+
+  if [ -d "$TEMPLATE_ROOT/packs" ]; then
+    mkdir -p "$target/packs"
+    [ -f "$TEMPLATE_ROOT/packs/README.md" ] && \
+      cp "$TEMPLATE_ROOT/packs/README.md" "$target/packs/README.md"
+    for pack_dir in "$TEMPLATE_ROOT/packs"/*/; do
+      [ -d "$pack_dir" ] || continue
+      # Use a distinct name so we don't shadow the outer pack_name flag-state.
+      local _pack_basename
+      _pack_basename="$(basename "$pack_dir")"
+      mkdir -p "$target/packs/$_pack_basename"
+      for f in "$pack_dir"*.md; do
+        [ -f "$f" ] || continue
+        cp "$f" "$target/packs/$_pack_basename/$(basename "$f")"
+      done
+    done
+  fi
+
 
   # Write framework integrity manifest for 'verify' mode
   ( cd "$target" && find .claude/hooks .claude/settings.json \
        -type f -exec sha256sum {} \; 2>/dev/null | sort ) \
     > "$target/.claude/INSTALLED" 2>/dev/null || true
 
-  echo "✓ Installed richardbot template."
-  echo
-  echo "  Next:"
-  echo "    1. Edit CLAUDE.md — fill in the placeholder sections."
-  echo "    2. Run 'richardbot-init survey' to get suggested surface chunks."
-  echo "    3. Author your first surface rule in .claude/rules/."
+  echo "✓ Installed richardbot template skeleton."
+
+  local bundled_bin="$target/bin/richardbot-init"
+
+  # ── Optional --pack <name>: install a stack-specific rule bundle ─────────
+  if [ -n "$pack_name" ]; then
+    echo
+    echo "→ Installing pack: $pack_name"
+    bash "$bundled_bin" pack add "$pack_name" "$target" 2>&1 | sed 's/^/  /'
+  fi
+
+  # ── Optional --full: run the autopopulate chain ──────────────────────────
+  # Costs: seed ~$1-2 + rescan ~$2-3 (haiku subprocesses). import-overview is
+  # free. copilot-mirror is free. Operator opted in by passing --full.
+  if [ "$full" = "1" ]; then
+    echo
+    echo "──────────────────────────────────────────────────────────────"
+    echo "→ --full autopopulate: spawning Haiku subprocesses (est \$3-5)"
+    echo "──────────────────────────────────────────────────────────────"
+
+    echo
+    echo "──── 1/4: seed (per-surface fragments) ────"
+    bash "$bundled_bin" seed "$target" --write 2>&1 | sed 's/^/  /'
+
+    if [ -n "$overview" ]; then
+      if [ ! -f "$overview" ]; then
+        echo
+        echo "⚠ --overview path not found: $overview (skipping import step)" >&2
+      else
+        echo
+        echo "──── 2/4: import-overview (split monolithic md → fragments) ────"
+        bash "$bundled_bin" import-overview "$target" "$overview" 2>&1 | sed 's/^/  /'
+      fi
+    else
+      echo
+      echo "──── 2/4: import-overview — skipped (no --overview path given) ────"
+    fi
+
+    echo
+    echo "──── 3/4: rescan (populate .richardbot-memory/ bug findings) ────"
+    bash "$bundled_bin" rescan "$target" --no-mirror 2>&1 | sed 's/^/  /'
+
+    echo
+    echo "──── 4/4: copilot-mirror (generate .github/ for Copilot) ────"
+    bash "$bundled_bin" copilot-mirror "$target" 2>&1 | sed 's/^/  /'
+
+    echo
+    echo "──────────────────────────────────────────────────────────────"
+    echo "✓ Full install complete. Test:"
+    echo "    echo '{\"prompt\":\"what is the structure\"}' | bash $target/.claude/hooks/prompt-fragment-loader.sh | jq -r .hookSpecificOutput.additionalContext | head -40"
+    echo "──────────────────────────────────────────────────────────────"
+  else
+    echo
+    echo "  Next:"
+    echo "    1. Edit CLAUDE.md — fill in the placeholder sections."
+    echo "    2. Run 'richardbot-init survey' to see detected surfaces."
+    echo "    3. Run 'richardbot-init seed --write' to auto-generate surface fragments."
+    echo "    4. Run 'richardbot-init rescan' to populate memory with bug findings."
+    echo "    5. Run 'richardbot-init copilot-mirror' to generate .github/ for Copilot."
+    echo
+    echo "    Or do all of the above in one shot:"
+    echo "      richardbot-init init --full [--pack <stack>] [--overview <existing.md>]"
+  fi
 }
 
 # ── survey ──────────────────────────────────────────────────────────────────
@@ -533,9 +644,427 @@ EOF
   echo "Total cost: \$$total_cost across ${#surfaces[@]} surface(s)" >&2
 }
 
+# ── rescan ──────────────────────────────────────────────────────────────────
+# Periodic refresh of bug findings. For each surface, dispatch a Haiku (or
+# bigger) subprocess to look for concrete file:line bugs, then write the
+# results to .richardbot-memory/<surface-slug>-bugs-YYYY-MM-DD.md. Any prior
+# bug-note for the same surface (different date) is moved into
+# .richardbot-memory/.archive/ so the audit trail is preserved.
+#
+# Default scope is ALL detected surfaces. --since "7 days ago" trims to only
+# surfaces with files touched by git in that window — typical weekly-cron mode.
+#
+# After rescanning, copilot-mirror runs automatically so the new findings reach
+# both Claude Code (via the loader hook) and Copilot (via .github/instructions/).
+do_rescan() {
+  local model="haiku"
+  local one_surface=""
+  local since=""
+  local age_out=""
+  local run_mirror="1"
+
+  shift 2 || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --surface)   one_surface="$2"; shift 2 ;;
+      --model)     model="$2"; shift 2 ;;
+      --since)     since="$2"; shift 2 ;;
+      --age-out)   age_out="$2"; shift 2 ;;
+      --no-mirror) run_mirror="0"; shift ;;
+      *) echo "⚠ unknown rescan option: $1" >&2; shift ;;
+    esac
+  done
+
+  command -v claude >/dev/null 2>&1 || { echo "⚠ 'claude' CLI not on PATH" >&2; exit 2; }
+  command -v jq     >/dev/null 2>&1 || { echo "⚠ 'jq' not on PATH" >&2; exit 2; }
+
+  [ -d "$target/.richardbot-memory" ] || mkdir -p "$target/.richardbot-memory"
+  local archive_dir="$target/.richardbot-memory/.archive"
+
+  # ── Surface enumeration (same heuristic as do_seed) ──────────────────────
+  local surfaces=()
+  if [ -n "$one_surface" ]; then
+    surfaces=("$one_surface")
+  else
+    if [ -d "$target/src" ]; then
+      while IFS= read -r entry; do
+        local base
+        base="$(basename "$entry" | sed 's/\.[jt]sx\?$//')"
+        case "$base" in
+          index|main|app|theme|password|tailwind.config) continue ;;
+        esac
+        surfaces+=("src/$base.js")
+      done < <(find "$target/src" -maxdepth 1 -type f \
+                 \( -name '*.js' -o -name '*.ts' -o -name '*.tsx' -o -name '*.jsx' \) 2>/dev/null)
+    fi
+    for vroot in "$target/src/components" "$target/src/vue/components"; do
+      [ -d "$vroot" ] || continue
+      while IFS= read -r d; do
+        [ -d "$d" ] || continue
+        surfaces+=("${vroot#$target/}/$(basename "$d")")
+      done < <(find "$vroot" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    done
+    if [ -d "$target/extensions" ]; then
+      while IFS= read -r d; do
+        [ -d "$d" ] || continue
+        surfaces+=("extensions/$(basename "$d")")
+      done < <(find "$target/extensions" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    fi
+  fi
+
+  if [ "${#surfaces[@]}" -eq 0 ]; then
+    echo "⚠ No surfaces detected." >&2
+    exit 2
+  fi
+
+  # ── --since filter: keep only surfaces with files touched in the window ─
+  if [ -n "$since" ]; then
+    if ! git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "⚠ --since requires target to be a git repo; ignoring" >&2
+    else
+      local touched
+      touched="$(git -C "$target" log --since="$since" --name-only --pretty=format: 2>/dev/null \
+                 | grep -v '^$' | sort -u)"
+      local filtered=()
+      for surf in "${surfaces[@]}"; do
+        if printf '%s\n' "$touched" | grep -q "^${surf}/"; then
+          filtered+=("$surf")
+        elif printf '%s\n' "$touched" | grep -qx "$surf"; then
+          filtered+=("$surf")
+        fi
+      done
+      surfaces=("${filtered[@]}")
+      echo "→ --since '$since' filtered to ${#surfaces[@]} surface(s)" >&2
+    fi
+  fi
+
+  if [ "${#surfaces[@]}" -eq 0 ]; then
+    echo "✓ Nothing to rescan in --since window. Done." >&2
+    return 0
+  fi
+
+  local today
+  today="$(date +%Y-%m-%d)"
+  local total_cost="0"
+  local rescanned=0
+
+  for surf in "${surfaces[@]}"; do
+    local abs="$target/$surf"
+    if [ ! -e "$abs" ]; then
+      echo "⚠ surface not found: $abs (skipping)" >&2
+      continue
+    fi
+
+    local slug
+    slug="$(echo "$surf" | sed -e 's|^src/||' -e 's|^src/vue/components/||' \
+                              -e 's|^src/components/||' -e 's|^extensions/||' \
+                              -e 's|\.[jt]sx\?$||' -e 's|/|-|g')"
+    local out_name=".richardbot-memory/${slug}-bugs-${today}.md"
+
+    echo "→ rescanning $surf → $out_name (model=$model)" >&2
+
+    local prompt
+    prompt="$(cat <<EOF
+You are a code-quality reviewer producing a bug-findings memo for the richardbot context system. Scan ONLY the directory $surf and find concrete bugs.
+
+YOUR OUTPUT BEGINS WITH '---'. NO PREAMBLE. NO "Here are the bugs...". JUST THE FRAGMENT.
+
+EXACT frontmatter shape:
+
+---
+description: Bug findings from periodic rescan of $surf on ${today}. File:line citations. File these as tickets / fixes.
+date: ${today}
+type: friction
+surface: $surf
+triggers:
+  prompt:
+    - "<bug-keyword-1>"
+    - "<bug-keyword-2>"
+    - "<bug-keyword-3>"
+---
+
+Then a markdown body with these H2 sections, in order, each populated only if you have CONCRETE findings:
+
+  ## Severity: high (security)     — XSS, unsanitized HTML, exposed secrets, auth bypass, SQL injection
+  ## Severity: high (correctness)  — bugs that break behavior: wrong operator, wrong API usage, dead code paths
+  ## Severity: medium              — race conditions, missing error handling, mutable shared state, broken edge cases
+  ## Severity: low (hygiene)       — console.log/error in shipped code, missing null guards, unused imports, dead branches
+  ## Provenance                    — one sentence: "Surfaced by haiku rescan of \`$surf\` on ${today}. File:line citations verified against the codebase at scan time."
+
+CONSTRAINTS:
+- Every bullet must have a file:line citation. No speculation, no "could be a bug". Read the code, cite the line.
+- If a severity has no findings, OMIT that section. Don't pad with "none observed".
+- 3–8 prompt-trigger keywords derived from the actual bugs found (e.g. "v-html", "XSS", "console.log", "querySelector"). These are word-boundary matchable — no whitespace inside a token.
+- ≤120 lines total.
+
+SCOPE: $surf only. Do not look at files outside this dir.
+
+Run \`ls $surf\` and read the most-relevant files, then output the fragment beginning with '---'.
+EOF
+)"
+
+    local out_json
+    set +e
+    out_json="$(cd "$target" && claude --print --model "$model" \
+                  --output-format json \
+                  --permission-mode bypassPermissions \
+                  --max-turns 15 \
+                  "$prompt")"
+    local rc=$?
+    set -e
+    if [ $rc -ne 0 ] || [ -z "$out_json" ]; then
+      echo "  ⚠ rescan failed for $surf (rc=$rc)" >&2
+      continue
+    fi
+
+    local body cost
+    body="$(printf '%s' "$out_json" | jq -r '.result // empty')"
+    cost="$(printf '%s' "$out_json" | jq -r '.total_cost_usd // 0')"
+    total_cost="$(awk -v a="$total_cost" -v b="$cost" 'BEGIN{printf "%.4f", a+b}')"
+
+    # Strip any preamble before the first '---'
+    body="$(printf '%s\n' "$body" | awk '
+      BEGIN { found = 0 }
+      /^---[[:space:]]*$/ { found = 1 }
+      found
+    ')"
+    # Drop duplicate leading '---' if present
+    if printf '%s\n' "$body" | head -2 | awk '/^---[[:space:]]*$/' | wc -l | grep -q '^2$'; then
+      body="$(printf '%s\n' "$body" | tail -n +2)"
+    fi
+
+    # Archive any previous bug-note for this surface (different date)
+    local prior
+    prior="$(find "$target/.richardbot-memory" -maxdepth 1 -type f -name "${slug}-bugs-*.md" \
+              ! -name "${slug}-bugs-${today}.md" 2>/dev/null || true)"
+    if [ -n "$prior" ]; then
+      mkdir -p "$archive_dir"
+      while IFS= read -r old; do
+        [ -z "$old" ] && continue
+        mv "$old" "$archive_dir/"
+        echo "  ↳ archived $(basename "$old") → .archive/" >&2
+      done <<< "$prior"
+    fi
+
+    printf '%s\n' "$body" > "$target/$out_name"
+    echo "  ✓ wrote $out_name (\$$cost, $(wc -l < "$target/$out_name") lines)" >&2
+    rescanned=$((rescanned + 1))
+  done
+
+  # ── --age-out: archive memory notes older than N days ────────────────────
+  if [ -n "$age_out" ]; then
+    mkdir -p "$archive_dir"
+    local aged=0
+    while IFS= read -r old; do
+      [ -z "$old" ] && continue
+      mv "$old" "$archive_dir/"
+      echo "  ↳ aged-out $(basename "$old") → .archive/" >&2
+      aged=$((aged + 1))
+    done < <(find "$target/.richardbot-memory" -maxdepth 1 -type f -name '*.md' \
+              ! -name 'README.md' ! -name '_recent.md' \
+              -mtime "+${age_out}" 2>/dev/null)
+    [ "$aged" -gt 0 ] && echo "→ aged out $aged memory note(s) older than ${age_out}d" >&2
+  fi
+
+  echo >&2
+  echo "Rescanned $rescanned surface(s). Total cost: \$$total_cost" >&2
+
+  # ── Auto-re-run copilot-mirror so .github/ catches up ────────────────────
+  if [ "$run_mirror" = "1" ] && [ -f "$target/.github/copilot-instructions.md" ]; then
+    echo "→ refreshing copilot mirror..." >&2
+    do_copilot_mirror
+  fi
+}
+
 # ── verify ──────────────────────────────────────────────────────────────────
 # Compare current framework files against the .claude/INSTALLED manifest
 # written at init/update time. Reports tampered / missing / extra files.
+# ── import-overview ─────────────────────────────────────────────────────────
+# Take an existing architecture-overview markdown (a "Shape A" monolith) and
+# split it into per-H2 fragments under .claude/rules/architecture-<slug>.md,
+# each with derived triggers, so its content loads lazily under the fragment
+# model instead of always-on. The source md is consumed read-only — we don't
+# move or delete it; the operator decides whether to keep the original.
+do_import_overview() {
+  local src=""
+  shift 2 || true
+  src="${1:-}"
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
+    echo "⚠ Usage: richardbot-init import-overview [target-dir] <path-to-source.md>" >&2
+    exit 2
+  fi
+
+  command -v python3 >/dev/null 2>&1 || { echo "⚠ python3 required" >&2; exit 2; }
+  [ -d "$target/.claude/rules" ] || { echo "⚠ Run 'init' first." >&2; exit 2; }
+
+  python3 - "$target" "$src" <<'PYEOF'
+import os, re, sys
+
+target, src_path = sys.argv[1], sys.argv[2]
+rules_dir = os.path.join(target, ".claude/rules")
+
+with open(src_path) as f:
+    text = f.read()
+
+# Strip any prose prefix before the first real H1 / H2.
+# Walk line-by-line; skip past fenced code blocks so a `# comment` inside a
+# bash fence doesn't get mistaken for an H1.
+_lines_for_prefix = text.split("\n")
+_in_fence = False
+_start_idx = 0
+for _i, _line in enumerate(_lines_for_prefix):
+    if _line.startswith("```"):
+        _in_fence = not _in_fence
+        continue
+    if _in_fence:
+        continue
+    if _line.lstrip().startswith("# ") or _line.lstrip().startswith("## "):
+        _start_idx = _i
+        break
+text = "\n".join(_lines_for_prefix[_start_idx:])
+
+# Topic synonym map — augment derived tokens with terms readers actually use
+SYNONYMS = {
+    "build": ["webpack", "bundle", "dist", "compile"],
+    "pipeline": ["webpack", "bundle", "ci", "deploy"],
+    "vue": ["vue", "data-vue-root", "composition", "options-api", "mount"],
+    "architecture": ["pattern", "structure"],
+    "pinia": ["store", "state", "useCartStore", "useProductStore"],
+    "service": ["service", "api", ".service.js"],
+    "styling": ["scss", "tailwind", "itcss", "css"],
+    "shopify": ["liquid", "snippet", "section", "template", "theme"],
+    "templating": ["liquid", "section", "snippet", "template", "layout"],
+    "integration": ["algolia", "nosto", "onetrust", "yotpo", "klaviyo"],
+    "third-party": ["algolia", "nosto", "onetrust", "integration", "vendor"],
+    "analytics": ["gtm", "datalayer", "tracking", "adobe", "tag"],
+    "tracking": ["gtm", "datalayer", "tracking", "analytics"],
+    "market": ["locale", "i18n", "currency", "hreflang", "country"],
+    "i18n": ["locale", "translation", "currency", "hreflang"],
+    "subscription": ["recharge", "subscription", "swap", "billing"],
+    "recharge": ["subscription", "swap", "billing", "portal"],
+    "workflow": ["npm", "command", "lint", "build", "deploy"],
+    "development": ["npm", "command", "lint", "build", "dev"],
+    "deployment": ["ci", "circleci", "deploy", "production", "staging"],
+    "naming": ["convention", "naming", "snippet", "filename"],
+    "convention": ["naming", "convention", "filename"],
+    "overview": ["overview", "stack", "platform"],
+    "structure": ["structure", "directory", "layout"],
+    "cart": ["cart", "sidecart", "cartline", "line item"],
+    "product": ["product", "pdp", "variant", "gallery"],
+    "wishlist": ["wishlist", "favorite"],
+    "gwp": ["gwp", "gift", "free gift"],
+    "search": ["search", "algolia", "predictive"],
+    "blog": ["blog", "article"],
+    "account": ["account", "login", "register", "customer"],
+    "section": ["section", "snippet", "liquid"],
+    "content": ["section", "hero", "banner", "rich-text"],
+}
+
+STOPWORDS = frozenset("the and for that with from this what are how when via per all any only one new our own its".split())
+
+def slugify(title):
+    s = re.sub(r'^\d+\.\s*', '', title)           # strip "N. " numeric prefix
+    s = re.sub(r'[^a-zA-Z0-9\s-]', '', s)
+    s = re.sub(r'\s+', '-', s.strip().lower())
+    return s or "section"
+
+def derive_triggers(title, body):
+    title_words = re.findall(r'[A-Za-z][A-Za-z0-9-]{2,}', title.lower())
+    title_words = [w for w in title_words if w not in STOPWORDS and len(w) >= 4]
+    para_words = re.findall(r'[A-Za-z][A-Za-z0-9-]{3,}', body[:400].lower())
+    para_words = [w for w in para_words if w not in STOPWORDS and len(w) >= 5]
+
+    triggers = []
+    seen = set()
+
+    for w in title_words:
+        if w not in seen:
+            triggers.append(w); seen.add(w)
+        for syn in SYNONYMS.get(w, []):
+            sl = syn.lower()
+            if sl not in seen:
+                triggers.append(syn); seen.add(sl)
+        if len(triggers) >= 6:
+            break
+
+    if len(triggers) < 4:
+        for w in para_words:
+            if w not in seen:
+                triggers.append(w); seen.add(w)
+                if len(triggers) >= 6:
+                    break
+
+    return triggers[:8] or ["architecture"]
+
+# Split on H2 boundaries
+lines = text.split("\n")
+sections = []
+current = {"title": None, "body": []}
+for line in lines:
+    if re.match(r'^##\s+\S', line):
+        if current["title"] is not None or current["body"]:
+            sections.append(current)
+        current = {"title": line[3:].strip(), "body": []}
+    else:
+        current["body"].append(line)
+if current["title"] is not None:
+    sections.append(current)
+
+written = 0
+skipped = []
+for sec in sections:
+    title = sec["title"]
+    if not title:
+        continue
+    body_text = "\n".join(sec["body"]).strip()
+    if not body_text:
+        skipped.append(title + " (empty)")
+        continue
+
+    slug = slugify(title)
+    out_name = f"architecture-{slug}.md"
+    out_path = os.path.join(rules_dir, out_name)
+
+    # Description: first non-empty, non-table-row line of body
+    desc = ""
+    for line in body_text.split("\n"):
+        line = line.strip()
+        if line and not line.startswith("|") and not line.startswith("```") and not line.startswith("---"):
+            desc = re.sub(r'\*\*([^*]+)\*\*', r'\1', line)  # strip bold
+            desc = re.sub(r'\[([^]]+)\]\([^)]+\)', r'\1', desc)  # strip links
+            if len(desc) > 200:
+                desc = desc[:197] + "..."
+            break
+    if not desc:
+        desc = f"{title} — architecture reference"
+
+    triggers = derive_triggers(title, body_text)
+
+    fm = ["---"]
+    fm.append(f"description: {desc}")
+    fm.append("alwaysApply: false")
+    fm.append("triggers:")
+    fm.append("  prompt:")
+    for t in triggers:
+        fm.append(f'    - "{t}"')
+    fm.append("---")
+    fm.append("")
+    fm.append(f"# {title}")
+    fm.append("")
+    fm.append(body_text)
+    fm.append("")
+
+    with open(out_path, "w") as f:
+        f.write("\n".join(fm))
+    written += 1
+    print(f"  ✓ wrote .claude/rules/{out_name} ({len(body_text.splitlines())} body lines, triggers: {', '.join(triggers)})")
+
+print(f"\nWrote {written} fragment(s) under .claude/rules/architecture-*.md")
+if skipped:
+    print(f"Skipped (empty): {', '.join(skipped)}")
+PYEOF
+}
+
 do_verify() {
   local manifest="$target/.claude/INSTALLED"
   if [ ! -f "$manifest" ]; then
@@ -676,14 +1205,247 @@ do_pack() {
   esac
 }
 
+# ── copilot-mirror ──────────────────────────────────────────────────────────
+# Generate GitHub Copilot equivalents of .claude/rules/ AND .richardbot-memory/.
+#
+# Mapping (rules):
+#   - alwaysApply: true   → folded into .github/copilot-instructions.md
+#   - globs: present      → .github/instructions/<name>.instructions.md with `applyTo: <globs>`
+#   - only prompt triggers → folded into copilot-instructions.md with a note
+#
+# Mapping (memory — friction notes, scan findings, runbooks etc):
+#   - Every .richardbot-memory/*.md (except README.md / _recent.md) is folded
+#     into a "Known findings" section of copilot-instructions.md so Copilot can
+#     ANSWER FROM MEMORY about already-discovered issues instead of re-grepping.
+#   - If the memory body mentions paths under common surface dirs (src/, app/,
+#     etc.), an additional .github/instructions/memory-<name>.instructions.md
+#     is written with a derived applyTo glob so editing in that surface primes
+#     the finding into Copilot context.
+#
+# This is a one-shot generator. Re-run after editing sources to refresh.
+do_copilot_mirror() {
+  [ -d "$target/.claude/rules" ] || { echo "⚠ Target has no .claude/rules/ — run 'init' first." >&2; exit 2; }
+
+  command -v python3 >/dev/null 2>&1 || { echo "⚠ python3 required for YAML parsing." >&2; exit 2; }
+
+  python3 - "$target" <<'PYEOF'
+import os, sys, re
+
+target = sys.argv[1]
+rules_dir = os.path.join(target, ".claude/rules")
+mem_dir = os.path.join(target, ".richardbot-memory")
+gh_dir = os.path.join(target, ".github")
+inst_dir = os.path.join(gh_dir, "instructions")
+os.makedirs(inst_dir, exist_ok=True)
+
+main_path = os.path.join(gh_dir, "copilot-instructions.md")
+
+def split_frontmatter(text):
+    """Return (frontmatter_dict, body_str). Naive YAML — handles our simple shape."""
+    if not text.startswith("---"):
+        return ({}, text)
+    end = text.find("\n---", 3)
+    if end == -1:
+        return ({}, text)
+    fm_text = text[3:end].strip()
+    body = text[end+4:].lstrip("\n")
+    fm = {}
+    cur_key = None
+    cur_sub = None
+    for raw in fm_text.split("\n"):
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        # Top-level scalar: "key: value"
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*):\s*(.+)$', line)
+        if m and not line.startswith(" ") and not line.startswith("\t"):
+            k, v = m.group(1), m.group(2).strip()
+            # Inline list
+            il = re.match(r'^\[(.*)\]$', v)
+            if il:
+                items = [x.strip().strip('"').strip("'") for x in il.group(1).split(",") if x.strip()]
+                fm[k] = items
+            else:
+                fm[k] = v.strip('"').strip("'")
+            cur_key = None
+            cur_sub = None
+            continue
+        # Top-level block key: "key:"
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*):\s*$', line)
+        if m:
+            cur_key = m.group(1)
+            cur_sub = None
+            fm.setdefault(cur_key, {})
+            continue
+        # Sub-block: "  key:"
+        m = re.match(r'^  ([A-Za-z_][A-Za-z0-9_]*):\s*$', line)
+        if m and cur_key:
+            cur_sub = m.group(1)
+            if isinstance(fm[cur_key], dict):
+                fm[cur_key][cur_sub] = []
+            continue
+        # List item: "    - value" or "  - value"
+        m = re.match(r'^(\s+)-\s+(.+)$', line)
+        if m:
+            v = m.group(2).strip().strip('"').strip("'")
+            if cur_sub and cur_key and isinstance(fm.get(cur_key), dict):
+                fm[cur_key][cur_sub].append(v)
+            elif cur_key and isinstance(fm.get(cur_key), dict) and not cur_sub:
+                # block was actually a list, not a sub-dict — convert
+                if isinstance(fm[cur_key], dict) and not fm[cur_key]:
+                    fm[cur_key] = []
+                if isinstance(fm[cur_key], list):
+                    fm[cur_key].append(v)
+            elif cur_key and isinstance(fm.get(cur_key), list):
+                fm[cur_key].append(v)
+    return (fm, body)
+
+# Build main copilot-instructions.md (always-load) + per-glob instructions files
+main_chunks = [
+    "# Copilot instructions\n",
+    "Auto-generated by `richardbot-init copilot-mirror` from `.claude/rules/*.md`",
+    "and `.richardbot-memory/*.md`. Edit the sources, not this file — re-run",
+    "mirror to refresh.\n",
+]
+
+count_always = 0
+count_glob = 0
+count_prompt_only = 0
+skipped = []
+
+for fname in sorted(os.listdir(rules_dir)):
+    if not fname.endswith(".md"):
+        continue
+    if fname in ("README.md", "example-surface.md"):
+        skipped.append(fname)
+        continue
+    path = os.path.join(rules_dir, fname)
+    with open(path) as f:
+        text = f.read()
+    fm, body = split_frontmatter(text)
+
+    always = (str(fm.get("alwaysApply", "")).lower() == "true")
+    globs = fm.get("globs") if isinstance(fm.get("globs"), list) else []
+    prompt_trigs = []
+    if isinstance(fm.get("triggers"), dict):
+        prompt_trigs = fm["triggers"].get("prompt", []) or []
+
+    if always:
+        main_chunks.append(f"\n## From `.claude/rules/{fname}`\n")
+        main_chunks.append(body.rstrip())
+        count_always += 1
+    elif globs:
+        out_name = fname.replace(".md", ".instructions.md")
+        out_path = os.path.join(inst_dir, out_name)
+        apply_to = ", ".join(f'"{g}"' for g in globs)
+        # Copilot wants applyTo as a single string with comma-separation in most current schemas
+        single = ",".join(globs)
+        with open(out_path, "w") as f:
+            f.write("---\n")
+            f.write(f'applyTo: "{single}"\n')
+            f.write("---\n\n")
+            f.write(body.rstrip())
+            f.write("\n")
+        count_glob += 1
+    elif prompt_trigs:
+        # Copilot has no prompt-keyword trigger. Fold into always-loaded with a note.
+        main_chunks.append(f"\n## From `.claude/rules/{fname}` (folded — prompt-keyword triggers don't translate to Copilot)\n")
+        main_chunks.append(f"Original triggers: {', '.join(repr(t) for t in prompt_trigs)}\n")
+        main_chunks.append(body.rstrip())
+        count_prompt_only += 1
+    else:
+        skipped.append(fname + " (no triggers / no alwaysApply)")
+
+# ── memory pass: fold .richardbot-memory/*.md into copilot-instructions.md ──
+# Memory notes are "things already discovered in this codebase" — file:line
+# findings from prior scans, friction observations, runbooks. Copilot should
+# answer questions about these from memory, not by re-grepping.
+count_memory = 0
+glob_memory = 0
+
+# Common source-dir prefixes we'll auto-derive applyTo globs for. Conservative
+# — we only emit a per-glob instructions file when the memory body clearly
+# refers to one of these dirs. Otherwise the note is always-load only.
+COMMON_PREFIXES = (
+    "src/vue/components/cart/", "src/vue/components/product/",
+    "src/vue/components/checkout/", "src/vue/components/collection/",
+    "src/vue/", "src/", "app/components/", "app/utils/", "app/", "lib/",
+    "components/", "pages/", "scripts/",
+)
+
+memory_intro_emitted = False
+
+if os.path.isdir(mem_dir):
+    for fname in sorted(os.listdir(mem_dir)):
+        if not fname.endswith(".md"):
+            continue
+        if fname in ("README.md", "_recent.md"):
+            continue
+        path = os.path.join(mem_dir, fname)
+        with open(path) as f:
+            text = f.read()
+        fm, body = split_frontmatter(text)
+
+        if not memory_intro_emitted:
+            main_chunks.append("\n---\n\n## Known findings (from .richardbot-memory/)\n")
+            main_chunks.append(
+                "These are concrete file:line findings already surfaced in earlier"
+                " scans of this codebase. When asked about them in chat, answer"
+                " FROM these notes — do not re-grep unless the user asks for"
+                " verification.\n"
+            )
+            memory_intro_emitted = True
+
+        main_chunks.append(f"\n### From `.richardbot-memory/{fname}`\n")
+        main_chunks.append(body.rstrip())
+        count_memory += 1
+
+        # Derive applyTo glob from the most-mentioned common prefix in the body.
+        prefix_hits = []
+        for p in COMMON_PREFIXES:
+            n = body.count(p)
+            if n > 0:
+                prefix_hits.append((n, p))
+        if prefix_hits:
+            prefix_hits.sort(reverse=True)
+            best = prefix_hits[0][1]
+            glob = best.rstrip("/") + "/**"
+            slug = fname.replace(".md", "")
+            out_path = os.path.join(inst_dir, f"memory-{slug}.instructions.md")
+            with open(out_path, "w") as f:
+                f.write("---\n")
+                f.write(f'applyTo: "{glob}"\n')
+                f.write("---\n\n")
+                f.write(f"# Known findings under `{best}`\n\n")
+                f.write("These were surfaced by an earlier scan. Prefer fixing")
+                f.write(" them when editing files in this surface.\n\n")
+                f.write(body.rstrip())
+                f.write("\n")
+            glob_memory += 1
+
+# Write main
+with open(main_path, "w") as f:
+    f.write("\n".join(main_chunks))
+    f.write("\n")
+
+print(f"✓ Wrote .github/copilot-instructions.md ({count_always} alwaysApply + {count_prompt_only} prompt-only folded + {count_memory} memory notes)")
+print(f"✓ Wrote {count_glob + glob_memory} files into .github/instructions/ ({count_glob} from rules + {glob_memory} from memory)")
+if skipped:
+    print(f"  skipped: {', '.join(skipped)}")
+PYEOF
+}
+
 case "$mode" in
-  init)      do_init ;;
-  survey)    do_survey ;;
-  seed)      do_seed "$@" ;;
-  pack)      do_pack "$@" ;;
-  verify)    do_verify ;;
-  update)    do_update ;;
-  uninstall) do_uninstall ;;
-  nuke)      do_nuke "$@" ;;
-  *)         usage ;;
+  init)            do_init "$@" ;;
+  survey)          do_survey ;;
+  seed)            do_seed "$@" ;;
+  rescan)          do_rescan "$@" ;;
+  pack)            do_pack "$@" ;;
+  copilot-mirror)  do_copilot_mirror ;;
+  import-overview) do_import_overview "$@" ;;
+  verify)          do_verify ;;
+  update)          do_update ;;
+  uninstall)       do_uninstall ;;
+  nuke)            do_nuke "$@" ;;
+  *)               usage ;;
 esac
