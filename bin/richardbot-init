@@ -1,0 +1,689 @@
+#!/usr/bin/env bash
+# richardbot-init — install / survey / seed / pack / verify / update / uninstall.
+#
+# Usage:
+#   richardbot-init init      [target-dir] [--pack <name>]   # lay down .claude/, CLAUDE.md, .richardbot-memory/
+#   richardbot-init survey    [target-dir]                   # detect stack + propose surface chunks
+#   richardbot-init seed      [target-dir] [opts]            # auto-generate surface fragments via LLM
+#   richardbot-init pack      <list|add|remove> [target-dir] [name]   # manage rule packs
+#   richardbot-init verify    [target-dir]                   # check framework integrity (hooks + settings)
+#   richardbot-init update    [target-dir]                   # pull latest template; preserve project files
+#   richardbot-init uninstall [target-dir]                   # remove framework; preserve user-authored content
+#   richardbot-init nuke      [target-dir]                   # remove EVERYTHING the template installs (destructive)
+#   richardbot-init help
+#
+# `seed` options (after target-dir):
+#   --surface <relpath>   only seed the surface at <relpath>; output to stdout
+#   --model <name>        haiku | sonnet | opus (default: haiku)
+#   --write               write generated fragments into target/.claude/rules/
+#
+# `pack` modes:
+#   pack list [target-dir]                # list installed packs (reads .claude/PACKS)
+#   pack add <name> [target-dir]          # install rule fragments from packs/<name>/
+#   pack remove <name> [target-dir]       # remove unmodified fragments from a previously-installed pack
+#
+# target-dir defaults to $(pwd).
+#
+# Install footprint (three places at the repo root):
+#   1. CLAUDE.md                — spine; user fills in placeholders
+#   2. .claude/                 — framework dir (hook, settings, rules, commands)
+#   3. .richardbot-memory/       — agent-writable memory (outside .claude/ deliberately)
+
+set -euo pipefail
+
+# Resolve the template root (script lives at <root>/bin/richardbot-init)
+TEMPLATE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 1
+}
+
+mode="${1:-help}"
+
+case "$mode" in
+  help|--help|-h) usage ;;
+esac
+
+# `pack` takes a sub-command as $2 (list/add/remove); target is parsed inside do_pack.
+# All other modes take target as $2 (defaults to pwd).
+if [ "$mode" = "pack" ]; then
+  target="$(pwd)"
+else
+  target="${2:-$(pwd)}"
+  target="$(cd "$target" && pwd)"
+fi
+
+echo "richardbot-init: $mode → $target"
+echo "template:         $TEMPLATE_ROOT"
+echo
+
+# ── init ────────────────────────────────────────────────────────────────────
+do_init() {
+  # Refuse to overwrite an existing install unless --force
+  if [ -f "$target/CLAUDE.md" ] || [ -d "$target/.claude" ]; then
+    echo "⚠ Target already has CLAUDE.md or .claude/ — refusing to overwrite."
+    echo "  Use 'richardbot-init update' instead, or remove the existing setup."
+    exit 2
+  fi
+
+  mkdir -p "$target/.claude/hooks" \
+           "$target/.claude/rules" \
+           "$target/.claude/commands" \
+           "$target/.richardbot-memory"
+
+  # Copy all hooks (auto-picks-up new ones added to the template)
+  for hook_src in "$TEMPLATE_ROOT/.claude/hooks/"*.sh; do
+    [ -f "$hook_src" ] || continue
+    cp "$hook_src" "$target/.claude/hooks/$(basename "$hook_src")"
+    chmod +x "$target/.claude/hooks/$(basename "$hook_src")"
+  done
+
+  cp "$TEMPLATE_ROOT/.claude/settings.json" \
+     "$target/.claude/settings.json"
+
+  # Copy all starter rules (README + conventions + secrets + pr-flow + any others)
+  for rule_src in "$TEMPLATE_ROOT/.claude/rules/"*.md; do
+    [ -f "$rule_src" ] || continue
+    cp "$rule_src" "$target/.claude/rules/$(basename "$rule_src")"
+  done
+
+  cp "$TEMPLATE_ROOT/.richardbot-memory/README.md" "$target/.richardbot-memory/README.md"
+  cp "$TEMPLATE_ROOT/.richardbot-memory/_recent.md" "$target/.richardbot-memory/_recent.md"
+
+  # Copy role files
+  for role_src in "$TEMPLATE_ROOT/.claude/commands/"*.md; do
+    [ -f "$role_src" ] || continue
+    cp "$role_src" "$target/.claude/commands/$(basename "$role_src")"
+  done
+
+  # gitignore.recommended at template root — copy with a clear name so users
+  # can decide what to merge into their actual .gitignore
+  cp "$TEMPLATE_ROOT/gitignore.recommended" "$target/.richardbot-gitignore.recommended"
+
+  # CLAUDE.md spine template — copy with project-name interpolated
+  project_name="$(basename "$target")"
+  sed "s|<PROJECT NAME>|$project_name|g" "$TEMPLATE_ROOT/CLAUDE.md" \
+    > "$target/CLAUDE.md"
+
+  # Write framework integrity manifest for 'verify' mode
+  ( cd "$target" && find .claude/hooks .claude/settings.json \
+       -type f -exec sha256sum {} \; 2>/dev/null | sort ) \
+    > "$target/.claude/INSTALLED" 2>/dev/null || true
+
+  echo "✓ Installed richardbot template."
+  echo
+  echo "  Next:"
+  echo "    1. Edit CLAUDE.md — fill in the placeholder sections."
+  echo "    2. Run 'richardbot-init survey' to get suggested surface chunks."
+  echo "    3. Author your first surface rule in .claude/rules/."
+}
+
+# ── survey ──────────────────────────────────────────────────────────────────
+do_survey() {
+  echo "## Stack detected"
+  echo
+
+  local stack=()
+  [ -f "$target/package.json" ] && stack+=("Node.js (package.json)")
+  [ -f "$target/pyproject.toml" ] && stack+=("Python (pyproject.toml)")
+  [ -f "$target/Cargo.toml" ] && stack+=("Rust (Cargo.toml)")
+  [ -f "$target/go.mod" ] && stack+=("Go (go.mod)")
+  [ -f "$target/Gemfile" ] && stack+=("Ruby (Gemfile)")
+
+  # Shopify signals
+  if compgen -G "$target/shopify.app.*.toml" > /dev/null 2>&1 \
+     || [ -f "$target/shopify.app.toml" ]; then
+    stack+=("Shopify App (shopify.app*.toml)")
+  fi
+  if [ -d "$target/extensions" ]; then
+    stack+=("Shopify Functions / Extensions (extensions/)")
+  fi
+  if [ -d "$target/sections" ] && [ -d "$target/templates" ] && [ -d "$target/snippets" ]; then
+    stack+=("Shopify Theme (sections + templates + snippets)")
+  fi
+
+  # Framework signals from package.json
+  if [ -f "$target/package.json" ] && command -v jq >/dev/null 2>&1; then
+    local deps
+    deps="$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' "$target/package.json" 2>/dev/null || true)"
+    grep -q '^@remix-run/' <<<"$deps" && stack+=("Remix")
+    grep -q '^next$' <<<"$deps" && stack+=("Next.js")
+    grep -q '^vue$' <<<"$deps" && stack+=("Vue")
+    grep -q '^react$' <<<"$deps" && stack+=("React")
+    grep -q '^vitest$' <<<"$deps" && stack+=("vitest")
+    grep -q '^jest$' <<<"$deps" && stack+=("jest")
+    grep -q '^@shopify/polaris$' <<<"$deps" && stack+=("Shopify Polaris")
+    grep -q '^@shopify/shopify-app-remix$' <<<"$deps" && stack+=("Shopify App Remix")
+  fi
+
+  if [ "${#stack[@]}" -eq 0 ]; then
+    echo "  (no recognized stack signals)"
+  else
+    for s in "${stack[@]}"; do echo "- $s"; done
+  fi
+  echo
+
+  echo "## Proposed surface chunks"
+  echo
+  echo "Each suggestion below maps to a candidate \`.claude/rules/surface-*.md\`"
+  echo "fragment. Pick what fits; author the body; let unused suggestions go."
+  echo
+
+  # Heuristic: per-page entry points in src/*.js or src/*.ts
+  if [ -d "$target/src" ]; then
+    while IFS= read -r entry; do
+      local base="$(basename "$entry" | sed 's/\.[jt]sx\?$//')"
+      case "$base" in
+        index|main|app|theme|password) continue ;; # skip generic
+      esac
+      echo "- \`surface-$base.md\` — entry point \`src/$base.{js,ts}\`"
+    done < <(find "$target/src" -maxdepth 1 -type f \( -name '*.js' -o -name '*.ts' -o -name '*.tsx' -o -name '*.jsx' \) 2>/dev/null)
+  fi
+
+  # Heuristic: per-route file in app/routes/ (Remix)
+  if [ -d "$target/app/routes" ]; then
+    while IFS= read -r route; do
+      local base="$(basename "$route" | sed 's/\.[jt]sx\?$//' | tr '.' '-')"
+      [ "$base" = "_index" ] && base="index"
+      echo "- \`surface-route-$base.md\` — Remix route \`app/routes/$(basename "$route")\`"
+    done < <(find "$target/app/routes" -maxdepth 1 -type f -name '*.jsx' -o -name '*.tsx' 2>/dev/null | head -8)
+  fi
+
+  # Heuristic: per-extension dir (Shopify Functions / Extensions)
+  if [ -d "$target/extensions" ]; then
+    while IFS= read -r ext; do
+      [ -d "$ext" ] || continue
+      local base="$(basename "$ext")"
+      echo "- \`surface-extension-$base.md\` — Shopify extension \`extensions/$base/\`"
+    done < <(find "$target/extensions" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+  fi
+
+  # Heuristic: per-Vue component domain (src/components/*/ or src/vue/components/*/)
+  for vue_root in "$target/src/components" "$target/src/vue/components"; do
+    if [ -d "$vue_root" ]; then
+      while IFS= read -r domain; do
+        [ -d "$domain" ] || continue
+        local base="$(basename "$domain")"
+        echo "- \`surface-vue-$base.md\` — Vue component tree \`${vue_root#$target/}/$base/\`"
+      done < <(find "$vue_root" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -10)
+    fi
+  done
+
+  echo
+  echo "## Cross-cutting suggestions"
+  echo
+  echo "- \`deploy.md\` — deploy targets + envs + gates (always relevant)"
+  echo "- \`pr-flow.md\` — PR conventions + review gates + merge policy"
+  echo "- \`perf-gate.md\` — if Lighthouse / bundle-size budgets exist"
+  if [ -d "$target/extensions" ] || [ -f "$target/vitest.config.js" ] || [ -f "$target/vitest.config.ts" ]; then
+    echo "- \`testing.md\` — vitest conventions, coverage targets, fixture patterns"
+  fi
+}
+
+# ── update ──────────────────────────────────────────────────────────────────
+do_update() {
+  if [ ! -d "$target/.claude" ]; then
+    echo "⚠ Target has no .claude/ — run 'richardbot-init init' first."
+    exit 2
+  fi
+
+  # Update only the framework files; preserve project-authored rules/memory/CLAUDE.md
+  for hook_src in "$TEMPLATE_ROOT/.claude/hooks/"*.sh; do
+    [ -f "$hook_src" ] || continue
+    cp "$hook_src" "$target/.claude/hooks/$(basename "$hook_src")"
+    chmod +x "$target/.claude/hooks/$(basename "$hook_src")"
+  done
+
+  cp "$TEMPLATE_ROOT/.claude/settings.json" \
+     "$target/.claude/settings.json"
+
+  cp "$TEMPLATE_ROOT/.claude/rules/README.md" "$target/.claude/rules/README.md"
+  cp "$TEMPLATE_ROOT/.richardbot-memory/README.md" "$target/.richardbot-memory/README.md"
+
+  # Refresh integrity manifest
+  ( cd "$target" && find .claude/hooks .claude/settings.json \
+       -type f -exec sha256sum {} \; 2>/dev/null | sort ) \
+    > "$target/.claude/INSTALLED" 2>/dev/null || true
+
+  # Role files: only update if the project hasn't customized them.
+  for role in architect dev qa scan postmortem; do
+    local src="$TEMPLATE_ROOT/.claude/commands/$role.md"
+    local dst="$target/.claude/commands/$role.md"
+    if [ ! -f "$dst" ] || cmp -s "$src" "$dst" 2>/dev/null; then
+      cp "$src" "$dst"
+    else
+      echo "  (preserved customized $role.md)"
+    fi
+  done
+
+  echo "✓ Updated framework files. Project-authored content preserved."
+}
+
+# ── uninstall ───────────────────────────────────────────────────────────────
+# Removes framework files only. Preserves:
+#   - CLAUDE.md (user-edited spine)
+#   - .claude/rules/<user-authored>.md (anything not shipped by us)
+#   - .claude/commands/<role>.md customizations
+#   - All of .richardbot-memory/ (agent-grown content)
+# The end state is "framework removed, your content survives." Re-install
+# later via `init`, then `update` to bring the framework back fresh.
+do_uninstall() {
+  if [ ! -d "$target/.claude" ] && [ ! -d "$target/.richardbot-memory" ] && [ ! -f "$target/CLAUDE.md" ]; then
+    echo "⚠ Nothing to uninstall — no .claude/, no .richardbot-memory/, no CLAUDE.md."
+    exit 2
+  fi
+
+  # Files we ship — safe to remove
+  rm -f "$target/.claude/hooks/prompt-fragment-loader.sh"
+  rm -f "$target/.claude/settings.json"
+  rm -f "$target/.claude/rules/README.md"
+  rm -f "$target/.richardbot-memory/README.md"
+
+  # Role files: only remove if unchanged from template (cmp -s).
+  for role in architect dev qa scan postmortem; do
+    local src="$TEMPLATE_ROOT/.claude/commands/$role.md"
+    local dst="$target/.claude/commands/$role.md"
+    if [ -f "$dst" ] && cmp -s "$src" "$dst" 2>/dev/null; then
+      rm -f "$dst"
+    elif [ -f "$dst" ]; then
+      echo "  (preserved customized $role.md — remove manually if unwanted)"
+    fi
+  done
+
+  # Starter rules: remove if unchanged from template
+  for starter in conventions.md example-surface.md; do
+    local src="$TEMPLATE_ROOT/.claude/rules/$starter"
+    local dst="$target/.claude/rules/$starter"
+    if [ -f "$dst" ] && cmp -s "$src" "$dst" 2>/dev/null; then
+      rm -f "$dst"
+    fi
+  done
+
+  # _recent.md: remove if it has the skeleton shape (no real entries beyond the header)
+  local recent="$target/.richardbot-memory/_recent.md"
+  if [ -f "$recent" ] && cmp -s "$TEMPLATE_ROOT/.richardbot-memory/_recent.md" "$recent" 2>/dev/null; then
+    rm -f "$recent"
+  fi
+
+  # Empty hooks/ dir → remove
+  rmdir "$target/.claude/hooks" 2>/dev/null || true
+
+  # If .claude/rules/ now has only user-authored files, leave it.
+  # If empty, remove.
+  rmdir "$target/.claude/rules" 2>/dev/null || true
+  rmdir "$target/.claude/commands" 2>/dev/null || true
+  rmdir "$target/.claude" 2>/dev/null || true
+  rmdir "$target/.richardbot-memory" 2>/dev/null || true
+
+  echo "✓ Framework files removed. User-authored content preserved."
+  echo "  Surviving files (if any) — review and remove manually if unwanted:"
+  find "$target/.claude" "$target/.richardbot-memory" "$target/CLAUDE.md" -type f 2>/dev/null | sed 's/^/    /'
+}
+
+# ── nuke ────────────────────────────────────────────────────────────────────
+# Removes EVERYTHING the template ever touches at the repo root.
+# Destructive — confirms before running unless --yes flag is set.
+do_nuke() {
+  echo "⚠ NUKE mode — about to remove:"
+  echo "    $target/CLAUDE.md"
+  echo "    $target/.claude/"
+  echo "    $target/.richardbot-memory/"
+  echo
+  if [ "${3:-}" != "--yes" ] && [ "${RICHARDBOT_NUKE_CONFIRM:-}" != "yes" ]; then
+    read -r -p "Confirm with 'yes' to proceed: " ans
+    [ "$ans" = "yes" ] || { echo "aborted"; exit 1; }
+  fi
+  rm -f  "$target/CLAUDE.md"
+  rm -rf "$target/.claude"
+  rm -rf "$target/.richardbot-memory"
+  echo "✓ Nuked."
+}
+
+# ── seed ────────────────────────────────────────────────────────────────────
+# Auto-generate surface fragments by dispatching `claude --print --model <X>`
+# subprocesses against each functional surface in the repo. Reads the source;
+# writes (optionally) into .claude/rules/. Per-fragment cost reported on stderr.
+#
+# Strategy: one subprocess per surface, run sequentially (parallelism left as
+# a follow-up — keeps the first cut readable + bounds total cost predictably).
+do_seed() {
+  local model="haiku"
+  local one_surface=""
+  local write_mode="0"
+
+  # Parse opts (args 3..N — $1 is mode, $2 is target)
+  shift 2 || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --surface) one_surface="$2"; shift 2 ;;
+      --model)   model="$2"; shift 2 ;;
+      --write)   write_mode="1"; shift ;;
+      *) echo "⚠ unknown seed option: $1" >&2; shift ;;
+    esac
+  done
+
+  command -v claude >/dev/null 2>&1 || { echo "⚠ 'claude' CLI not on PATH" >&2; exit 2; }
+  command -v jq     >/dev/null 2>&1 || { echo "⚠ 'jq' not on PATH" >&2; exit 2; }
+
+  if [ "$write_mode" = "1" ] && [ ! -d "$target/.claude/rules" ]; then
+    echo "⚠ Target has no .claude/rules/ — run 'init' first." >&2
+    exit 2
+  fi
+
+  # Build the surface list. If --surface given, use only that one;
+  # otherwise enumerate from directory shape (same heuristic as `survey`).
+  local surfaces=()
+  if [ -n "$one_surface" ]; then
+    surfaces=("$one_surface")
+  else
+    # Page entries: src/*.{js,ts}
+    if [ -d "$target/src" ]; then
+      while IFS= read -r entry; do
+        local base
+        base="$(basename "$entry" | sed 's/\.[jt]sx\?$//')"
+        case "$base" in
+          index|main|app|theme|password|tailwind.config) continue ;;
+        esac
+        surfaces+=("src/$base.js")
+      done < <(find "$target/src" -maxdepth 1 -type f \
+                 \( -name '*.js' -o -name '*.ts' -o -name '*.tsx' -o -name '*.jsx' \) 2>/dev/null)
+    fi
+    # Vue component domains
+    for vroot in "$target/src/components" "$target/src/vue/components"; do
+      [ -d "$vroot" ] || continue
+      while IFS= read -r d; do
+        [ -d "$d" ] || continue
+        surfaces+=("${vroot#$target/}/$(basename "$d")")
+      done < <(find "$vroot" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    done
+    # Shopify extensions
+    if [ -d "$target/extensions" ]; then
+      while IFS= read -r d; do
+        [ -d "$d" ] || continue
+        surfaces+=("extensions/$(basename "$d")")
+      done < <(find "$target/extensions" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    fi
+  fi
+
+  if [ "${#surfaces[@]}" -eq 0 ]; then
+    echo "⚠ No surfaces detected. Try 'survey' first or pass --surface <path>." >&2
+    exit 2
+  fi
+
+  local total_cost="0"
+  for surf in "${surfaces[@]}"; do
+    local abs="$target/$surf"
+    if [ ! -e "$abs" ]; then
+      echo "⚠ surface not found: $abs" >&2
+      continue
+    fi
+
+    # Build a fragment name from the surface path
+    local name
+    name="surface-$(echo "$surf" | sed -e 's|^src/||' -e 's|^src/vue/components/||' \
+                                       -e 's|^src/components/||' -e 's|^extensions/||' \
+                                       -e 's|\.[jt]sx\?$||' -e 's|/|-|g').md"
+
+    echo "→ seeding $surf → $name (model=$model)" >&2
+
+    # Build the dispatch prompt — tight, role-shaped, format-constrained.
+    # Critical: the first character of your output MUST be '-' (the start of '---').
+    local prompt
+    prompt="$(cat <<EOF
+You are a code surface scanner. Read the directory $surf inside the current repo and produce a single \`.md\` rule fragment for the richardbot context system.
+
+YOUR OUTPUT BEGINS WITH '---'. NO PREAMBLE. NO "Here is..." or "Now I'll...". NO TRAILING COMMENTARY. JUST THE FRAGMENT.
+
+EXACT frontmatter shape (copy the structure, fill in the values; do NOT flatten the triggers block):
+
+---
+description: <one-sentence summary of what this surface covers>
+alwaysApply: false
+triggers:
+  prompt:
+    - "<token-1>"
+    - "<token-2>"
+    - "<token-3>"
+globs:
+  - "<glob-pattern-1>"
+  - "<glob-pattern-2>"
+---
+
+Then a markdown body with these H2 sections in order:
+  ## What lives here   — bullet list of components/files with one-line purpose each
+  ## Conventions       — bullets of patterns/rules specific to this surface
+  ## Known fragilities — bullets of gotchas you can infer from the code (write "none observed" if honest)
+  ## How to verify     — bullets of how an engineer would test changes here
+
+CONSTRAINTS:
+- ≤80 lines total including frontmatter.
+- File:line citations when you reference something. Don't speculate.
+- If a section has nothing real to say, write "none observed" — do not pad.
+- 3–6 prompt tokens. 1–3 globs. Tokens should be word-boundary-matchable (no whitespace inside a single token unless the engineer would actually type that phrase).
+
+SCOPE: $surf only. Do not read or describe files outside that directory.
+
+Run \`ls $surf\` and \`cat\` the most important files inside it, then output the fragment beginning with '---'.
+EOF
+)"
+
+    # Dispatch from inside the target dir so the subprocess can `ls`/`cat` paths relative to repo root.
+    # Soft-fail on subprocess non-zero — let us inspect the response below.
+    local out_json
+    set +e
+    out_json="$(cd "$target" && claude --print --model "$model" \
+                  --output-format json \
+                  --permission-mode bypassPermissions \
+                  --max-turns 15 \
+                  "$prompt")"
+    local rc=$?
+    set -e
+    if [ $rc -ne 0 ]; then
+      echo "  ⚠ subprocess exit code $rc; response below if any" >&2
+    fi
+
+    if [ -z "$out_json" ]; then
+      echo "  ⚠ empty response" >&2
+      continue
+    fi
+
+    local body cost
+    body="$(printf '%s' "$out_json" | jq -r '.result // empty')"
+    cost="$(printf '%s' "$out_json" | jq -r '.total_cost_usd // 0')"
+    total_cost="$(awk -v a="$total_cost" -v b="$cost" 'BEGIN{printf "%.4f", a+b}')"
+
+    # ── Post-process: strip preamble; collapse duplicate '---' opener ─────
+    # 1. Drop everything before the FIRST '---' line so any "Now I'll produce..."
+    #    or markdown code-fence chrome is removed.
+    body="$(printf '%s\n' "$body" | awk '
+      BEGIN { found = 0 }
+      /^---[[:space:]]*$/ { found = 1 }
+      found
+    ')"
+    # 2. If output has two consecutive "---" lines at the top (model emitted a
+    #    leading fence AND a frontmatter opener), drop the first one.
+    if printf '%s\n' "$body" | head -2 | awk '/^---[[:space:]]*$/' | wc -l | grep -q '^2$'; then
+      body="$(printf '%s\n' "$body" | tail -n +2)"
+    fi
+    # 3. Detect & flag schema violations on the frontmatter (we don't auto-fix,
+    #    we surface them so the seed run is observable).
+    local fm_warnings=""
+    if ! printf '%s\n' "$body" | head -25 | grep -q '^  prompt:'; then
+      fm_warnings="${fm_warnings}\n  ⚠ triggers.prompt not nested correctly — re-prompt may be needed"
+    fi
+    if ! printf '%s\n' "$body" | head -25 | grep -q '^description:'; then
+      fm_warnings="${fm_warnings}\n  ⚠ description field missing"
+    fi
+
+    echo "  ✓ done (\$$cost)" >&2
+    [ -n "$fm_warnings" ] && printf '%b\n' "$fm_warnings" >&2
+
+    if [ "$write_mode" = "1" ]; then
+      printf '%s\n' "$body" > "$target/.claude/rules/$name"
+      echo "  ↳ wrote .claude/rules/$name ($(wc -l < "$target/.claude/rules/$name") lines)" >&2
+    else
+      echo "=== $name ==="
+      printf '%s\n' "$body"
+      echo
+    fi
+  done
+
+  echo >&2
+  echo "Total cost: \$$total_cost across ${#surfaces[@]} surface(s)" >&2
+}
+
+# ── verify ──────────────────────────────────────────────────────────────────
+# Compare current framework files against the .claude/INSTALLED manifest
+# written at init/update time. Reports tampered / missing / extra files.
+do_verify() {
+  local manifest="$target/.claude/INSTALLED"
+  if [ ! -f "$manifest" ]; then
+    echo "⚠ No manifest at $manifest — run 'richardbot-init init' or 'update' first."
+    exit 2
+  fi
+  echo "Verifying framework integrity against $manifest..."
+  local fails=0
+  while IFS= read -r line; do
+    local expected_hash file
+    expected_hash="$(awk '{print $1}' <<<"$line")"
+    file="$(awk '{print $2}' <<<"$line")"
+    if [ ! -f "$target/$file" ]; then
+      echo "  ✗ MISSING: $file"
+      fails=$((fails+1))
+      continue
+    fi
+    local actual_hash
+    actual_hash="$(sha256sum "$target/$file" | awk '{print $1}')"
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "  ✗ TAMPERED: $file"
+      echo "       expected: $expected_hash"
+      echo "       actual:   $actual_hash"
+      fails=$((fails+1))
+    else
+      echo "  ✓ ok:       $file"
+    fi
+  done < "$manifest"
+
+  if [ "$fails" -eq 0 ]; then
+    echo "✓ All framework files match manifest."
+  else
+    echo "⚠ $fails file(s) differ. Run 'richardbot-init update' to restore."
+    exit 2
+  fi
+}
+
+# ── pack ───────────────────────────────────────────────────────────────────
+# Install / list / remove opinionated rule fragment bundles from packs/<name>/.
+# Args after "pack" are <sub> [<name>] [<target-dir>]; target defaults to pwd.
+do_pack() {
+  shift  # drop "pack" mode arg
+  local sub="${1:-list}"
+  shift || true
+
+  # If the next arg looks like a path that exists, treat it as target; else it's the pack name.
+  local name=""
+  if [ -n "${1:-}" ]; then
+    if [ -d "${1}/.claude" ] || [ -f "${1}/CLAUDE.md" ]; then
+      target="$(cd "$1" && pwd)"
+      shift
+    elif [ -d "${1}" ] && [ "$sub" = "list" ]; then
+      target="$(cd "$1" && pwd)"
+      shift
+    else
+      name="$1"
+      shift
+    fi
+  fi
+  # If still got an arg, it's the target dir
+  if [ -n "${1:-}" ]; then
+    target="$(cd "$1" && pwd)"
+    shift
+  fi
+
+  case "$sub" in
+    list)
+      local manifest="$target/.claude/PACKS"
+      if [ ! -f "$manifest" ]; then
+        echo "No packs installed (no $manifest)."
+        echo
+        echo "Available packs in $TEMPLATE_ROOT/packs/:"
+        for d in "$TEMPLATE_ROOT/packs"/*/; do
+          [ -d "$d" ] && echo "  $(basename "$d")"
+        done
+        return 0
+      fi
+      echo "Installed packs:"
+      sed 's/^/  /' "$manifest"
+      ;;
+    add)
+      [ -z "$name" ] && { echo "⚠ Usage: richardbot-init pack add <name> [target-dir]" >&2; exit 2; }
+      local src="$TEMPLATE_ROOT/packs/$name"
+      [ -d "$src" ] || { echo "⚠ Pack '$name' not found in $TEMPLATE_ROOT/packs/" >&2; exit 2; }
+      [ -d "$target/.claude/rules" ] || { echo "⚠ Target has no .claude/rules/ — run 'init' first." >&2; exit 2; }
+
+      local count=0
+      for f in "$src"/*.md; do
+        [ -f "$f" ] || continue
+        local base
+        base="$(basename "$f")"
+        # Skip the pack's README — that's documentation, not a rule
+        [ "$base" = "README.md" ] && continue
+        cp "$f" "$target/.claude/rules/$base"
+        count=$((count+1))
+      done
+      # Record in manifest
+      touch "$target/.claude/PACKS"
+      if ! grep -qxF "$name" "$target/.claude/PACKS" 2>/dev/null; then
+        echo "$name" >> "$target/.claude/PACKS"
+      fi
+      echo "✓ Pack '$name' installed: $count rule fragment(s) copied to .claude/rules/"
+      ;;
+    remove)
+      [ -z "$name" ] && { echo "⚠ Usage: richardbot-init pack remove <name> [target-dir]" >&2; exit 2; }
+      local src="$TEMPLATE_ROOT/packs/$name"
+      [ -d "$src" ] || { echo "⚠ Pack '$name' not found in template" >&2; exit 2; }
+
+      local removed=0 preserved=0
+      for f in "$src"/*.md; do
+        [ -f "$f" ] || continue
+        local base
+        base="$(basename "$f")"
+        [ "$base" = "README.md" ] && continue
+        local dst="$target/.claude/rules/$base"
+        if [ -f "$dst" ] && cmp -s "$f" "$dst"; then
+          rm -f "$dst"
+          removed=$((removed+1))
+        elif [ -f "$dst" ]; then
+          echo "  (preserved customized $base — remove manually if unwanted)"
+          preserved=$((preserved+1))
+        fi
+      done
+      # Strip from manifest
+      if [ -f "$target/.claude/PACKS" ]; then
+        grep -v "^$name$" "$target/.claude/PACKS" > "$target/.claude/PACKS.tmp" 2>/dev/null || true
+        mv "$target/.claude/PACKS.tmp" "$target/.claude/PACKS"
+        # Remove manifest entirely if now empty
+        [ -s "$target/.claude/PACKS" ] || rm -f "$target/.claude/PACKS"
+      fi
+      echo "✓ Pack '$name' removed: $removed file(s) removed, $preserved preserved (customized)."
+      ;;
+    *)
+      echo "⚠ Unknown pack sub-command: $sub" >&2
+      echo "    Usage: richardbot-init pack <list|add|remove> [name]" >&2
+      exit 2
+      ;;
+  esac
+}
+
+case "$mode" in
+  init)      do_init ;;
+  survey)    do_survey ;;
+  seed)      do_seed "$@" ;;
+  pack)      do_pack "$@" ;;
+  verify)    do_verify ;;
+  update)    do_update ;;
+  uninstall) do_uninstall ;;
+  nuke)      do_nuke "$@" ;;
+  *)         usage ;;
+esac

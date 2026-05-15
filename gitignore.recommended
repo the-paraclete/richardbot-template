@@ -1,0 +1,28 @@
+# Recommended additions to your .gitignore when using richardbot-template.
+# Copy these lines (or merge with your existing .gitignore).
+# Pick a side on each commented option based on your team\'s preference.
+
+# ── Always ignore ─────────────────────────────────────────────────────────
+# Subprocess dispatch verdicts (runtime, may contain transient info)
+.dispatch-out/
+
+# Audit log (large, append-only; you may prefer to keep this — pick one)
+# .richardbot-memory/_audit.jsonl
+
+# ── Decide per-team ───────────────────────────────────────────────────────
+# Memory directory: COMMIT if you want shared institutional memory across the team.
+# IGNORE if memory should stay per-developer.
+# Default recommendation: COMMIT. Postmortems and friction notes are most valuable
+# when the whole team sees them next time the same shape recurs.
+# .richardbot-memory/
+
+# ── Anti-patterns — do NOT commit ─────────────────────────────────────────
+# These are common accident classes; explicit exclusion prevents foot-guns.
+*.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+.aws/credentials
