@@ -51,4 +51,4 @@ richardbot-init init /path/to/repo \
   --overview /path/to/existing-CLAUDE.md
 ```
 
-The full command takes ~5 minutes wall time and ~$3-5 in LLM subprocess cost on a philo-sized repo. Produces a working install with concrete bug findings already planted in memory and ready to surface on the next prompt.
+The full command takes ~5 minutes wall time and ~$3-5 in LLM subprocess cost on a medium-sized repo. Produces a working install with concrete bug findings already planted in memory and ready to surface on the next prompt.

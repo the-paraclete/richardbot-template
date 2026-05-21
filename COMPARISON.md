@@ -112,7 +112,7 @@ The same content lives in two different shapes on disk.
 ### Shape A
 
 ```
-philosophy-com.myshopify.com/
+example-theme.myshopify.com/
 ├── CLAUDE.md                    ← 23 KB, ~500 lines, always-loaded
 └── (rest of repo)
 ```
@@ -123,10 +123,10 @@ analytics, i18n, subscriptions, dev workflow, deployment, naming — sits in
 a single document. Every prompt loads the document. No conditional logic;
 no schema; no tooling.
 
-### Shape B (philo after install + import-overview)
+### Shape B (after install + import-overview)
 
 ```
-philosophy-com.myshopify.com/
+example-theme.myshopify.com/
 ├── CLAUDE.md                    ← spine; points at the fragments
 ├── .claude/
 │   ├── INSTALLED                ← sha256 manifest (verify integrity)

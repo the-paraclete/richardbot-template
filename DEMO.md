@@ -14,7 +14,7 @@ Lightning version: do Acts 1, 4, 5 only (5 minutes). Deep version: add Act 9.
 
 ## Act 1 — The problem (1 min)
 
-**Setup.** Open a fresh terminal in a real client repo (philo works). Have CLAUDE.md from a competitor visible in another tab — the 370-line monolithic one.
+**Setup.** Open a fresh terminal in a real client repo. Have CLAUDE.md from a competitor visible in another tab — the 370-line monolithic one.
 
 **Say.** *"Today's AI tools either get a wall-of-rules dumped in every conversation, or they get nothing. Both fail: the wall blows your context window in two turns; nothing means the AI greps the same 80,000-line codebase every time. We need a third thing: lazy-loaded, trigger-fired context that's there when relevant and silent when not."*
 
@@ -79,7 +79,7 @@ cat .claude/rules/surface-vue-components-cart.md | head -20
 
 ## Act 4 — The killer demo: AI already knows the bug (2 min)
 
-**Setup.** Open a Copilot chat (or Claude Code CLI) in a repo that has richardbot installed AND has memory notes under `.richardbot-memory/`. The philo branch is the demo case.
+**Setup.** Open a Copilot chat (or Claude Code CLI) in a repo that has richardbot installed AND has memory notes under `.richardbot-memory/`.
 
 **Say.** *"Watch what happens when I ask a question the AI's been told the answer to."*
 
@@ -219,7 +219,7 @@ ls .claude/rules/
 - **Sonnet** (~$0.20 startup tax + 4x rate): tests, dev work, PR-grade reviews
 - **Opus** (~$1+ startup tax + 20x rate): architect, postmortem, hard design
 
-Real numbers from the philo install pass:
+Real numbers from a typical install pass:
 
 - 15 surfaces × haiku scan = ~$2 total
 - 1 architect verdict = ~$0.50

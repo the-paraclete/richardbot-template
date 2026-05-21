@@ -34,9 +34,8 @@ already-written team review criteria document. ETA ~½ day of authoring.
 
 ## Targets
 
-Tested against / authored for:
-- `cotyorg/philosophy-com.myshopify.com`
-- Other coty Shopify Plus theme repos following the same conventions
+Authored against / tested on:
+- Shopify Plus theme repos following common Online Store 2.0 conventions
 
 Should drop in cleanly to any Online Store 2.0 theme on the same stack.
 Stack-specific values (specific component names, deploy-target list,

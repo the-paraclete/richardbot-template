@@ -9,15 +9,13 @@ triggers:
     - "external repo"
     - "vendor"
     - "shopify shop"
-    - "cotyorg"
-    - "cotyinc"
 ---
 
 # Client / external-repo discipline
 
 When working in a repo that is NOT your own team\'s, additional rules kick in.
 This fragment is the generic shape; if your team has a specific repo with its
-own discipline (e.g., `cotyorg/*`, `acmecorp/*`), copy this and tighten the
+own discipline (e.g., `acmecorp/*`, `bigclient/*`), copy this and tighten the
 specifics into a per-client rule.
 
 ## 1. Auth — use the right account for that org
