@@ -6,6 +6,10 @@
 # Subprocess dispatch verdicts (runtime, may contain transient info)
 .dispatch-out/
 
+# Lease state — runtime data, not source. Keep the dir via .gitkeep.
+.claude/state/leases/*.json
+!.claude/state/leases/.gitkeep
+
 # Audit log (large, append-only; you may prefer to keep this — pick one)
 # .richardbot-memory/_audit.jsonl
 
