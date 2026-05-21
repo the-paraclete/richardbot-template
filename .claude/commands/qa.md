@@ -28,7 +28,14 @@ Task: $ARGUMENTS
 
 ### Step 4: Functional verification — the only step that matters
 - Test the ACTUAL USER EXPERIENCE, not that code exists.
-- For UI: trace the user flow end-to-end.
+- **For UI / FE work:** drive a real browser via Puppeteer (or
+  Playwright if the project uses it). Load the page, click the
+  affordances, fill the inputs, assert on visible state and network
+  responses. Headless is fine for CI; headed is fine locally. Do NOT
+  rely on jsdom or unit-level "DOM looks right" — those are Dev's
+  tests, not QA's verification. If the project doesn't have Puppeteer
+  installed and the change touches FE, report YELLOW citing the
+  missing tool — UAT must catch what you couldn't.
 - For API: send real payloads, verify real responses on real state.
 - For bugs: reproduce the original conditions; confirm the bug is gone.
 

@@ -1,5 +1,5 @@
 ---
-description: The canonical dev cycle — Triage → Architect → Designer → Dev → /review → QA → Ship → Docs. Use the cycle for everything. Tests-first where possible. /review (opus) is a mandatory blocking gate.
+description: The canonical dev cycle — Triage → Architect → Designer → Dev → Review → QA-tests → QA → UAT → Ship → Docs. Use the cycle for everything. Tests-first where possible. Review (opus) and QA gates are mandatory blocking.
 alwaysApply: true
 ---
 
@@ -12,23 +12,40 @@ Each role declares its own model.
 
 ## The flow
 
-1. **Triage** (`triage`, haiku/sonnet) — decide if the work is the full
-   cycle or a one-liner. Routes to architect or directly to dev.
+1. **Triage** (`triage`, haiku) — decide if the work is the full cycle,
+   direct-to-Dev (mechanical), or an exception (typo/format/revert).
 2. **Architect** (`architect`, opus) — designs surface shape. No code.
-   Produces a plan doc that dev executes against. Skipped for purely
+   Produces a plan doc that Dev executes against. Skipped for purely
    mechanical changes.
 3. **Designer** (`designer`, opus) — interaction shape, when the work
    touches the UI. Skipped for backend-only changes.
-4. **Dev** (`dev`, sonnet) — tests-first per the coverage discipline
-   below, then code. Default seat for new code.
-5. **/review** (opus) — MANDATORY BLOCKING GATE. Opus reviewer catches
-   subtle bugs Dev shipped. FAIL → back to Dev. PASS → proceed.
-6. **QA** (`qa`, sonnet) — verifies the change actually works in
-   running form, not just that tests pass. PASS / FAIL / NEEDS-REVISION.
-7. **Ship** (`ship`, sonnet) — commit, push, open PR with the body
+4. **Dev** (`dev`, opus) — tests-first per the coverage discipline
+   below, then code. Sonnet writes code poorly enough that the cycle
+   uses opus as the default dev tier; retry-with-fresh-dispatch is the
+   escalation pattern when a dev session is cut off (max-turns,
+   0 bytes), not a separate junior seat.
+5. **Review** (`review`, opus) — MANDATORY BLOCKING GATE. Reads the
+   diff, catches the subtle-bug class (off-by-one, null-guards,
+   type-coercion, scope decisions, security smells). FAIL → back to
+   Dev. PASS → proceed.
+6. **QA Tests** (`qa-tests`, sonnet) — MANDATORY BLOCKING GATE.
+   Verifies the test suite is *meaningful* — not just passing. Catches
+   rubber-stamp tests, missing edge coverage, stubs-pretending-to-be-
+   behavior. FAIL → back to Dev. PASS → proceed.
+7. **QA** (`qa`, sonnet) — MANDATORY BLOCKING GATE. Verifies the change
+   actually works in running form. For UI / FE work, drives a real
+   browser via Puppeteer; for backend / CLI, exercises the changed
+   surface against real state. PASS / FAIL / NEEDS-REVISION / YELLOW
+   (when a tool the verification needs isn't installed — UAT must
+   then catch what QA couldn't).
+8. **UAT** (manual, the operator) — human verification before ship.
+   QA can't catch every interaction edge; UAT is where the operator
+   actually uses the feature. Not a dispatched seat — this stage gates
+   on a human's nod.
+9. **Ship** (`ship`, sonnet) — commit, push, open PR with the body
    shape from `pr-flow.md`. Watches CI to green.
-8. **Docs** (`docs`, sonnet) — updates anything the change made stale
-   (READMEs, CLAUDE.md, rule fragments, role files).
+10. **Docs** (`docs`, sonnet) — updates anything the change made stale
+    (READMEs, CLAUDE.md, rule fragments, role files).
 
 ## The "everything" rule
 
@@ -44,37 +61,29 @@ Exceptions are explicit and rare:
 
 Triage makes the exception call — Dev does not eyeball it.
 
-## Two dev seats: Dev (sonnet) and Tech Lead (opus)
+## The gate layer — three blocking gates after Dev
 
-- **Dev** is the default seat. Cheap, fast, tests-first.
-- **Tech Lead** is the senior seat. Same role contract, opus model.
-  Takes over when Dev chokes.
+After Dev ships work, three automated gates run in sequence before
+human UAT:
 
-Tech Lead is invoked automatically on any of these signals:
+- **Review** (opus) — does the *code itself* look correct? Subtle bugs,
+  security, scope.
+- **QA Tests** (sonnet) — does the *test suite* prove anything?
+  Rubber-stamp tests fail this gate.
+- **QA** (sonnet, +Puppeteer for FE) — does the *built thing* work
+  end-to-end?
 
-- Dev returned max-turns without a result
-- Dev returned max-turns with partial work in the dev clone — Tech
-  Lead salvages and completes from there
-- Dev returned 0 bytes (silent fail / tool-loop deadlock)
-- Dev returned diagnosis-only when fix was the deliverable
-- Dev's tests pass but the code looks wrong on inspection
+Each gate FAILs back to Dev with a file:line citation. PASS proceeds.
+Per `gate-discipline.md`, gates surface ONLY blocking issues inline;
+non-blocking polish goes to PM's post-cycle friction bundle.
 
-Tech Lead reads the dev-clone state first and finishes from there if
-salvageable. Otherwise starts fresh on the same task.
+## When Dev gets cut off
 
-## /review is mandatory and blocking
-
-Every Dev-shipped change passes through `/review` (opus) before merge.
-The opus reviewer catches the class of bugs Dev's model is prone to:
-
-- Off-by-one indexing
-- Missed null/undefined guards
-- Type-coercion gotchas (`Number(true) === 1`, `"" == 0`, etc.)
-- Misnamed identifiers that compile because they shadow something
-- Scope decisions that look right but break a consumer
-
-`/review FAIL` → back to Dev with the failure cited at file:line. No
-merge until `/review PASS`.
+If Dev returns max-turns, 0 bytes, or diagnosis-only when fix was the
+deliverable, the recovery pattern is **re-dispatch Dev with the partial
+work as prior state**, not a separate "senior" seat. Both dispatches
+run on opus; the second one reads `git status` and `git diff` first and
+decides salvage vs. redo before writing.
 
 ## Tests where possible
 
@@ -85,7 +94,8 @@ calls — get an explicit waiver line in the PR body explaining why
 the test wasn't written.
 
 No skipping tests for convenience. "It was hard to test" is not a
-waiver.
+waiver. (QA-tests will catch the meaningful-tests-are-missing case
+on the next gate anyway.)
 
 ## Coverage discipline
 
@@ -115,10 +125,7 @@ claude --print \
 TASK: $TASK_DESCRIPTION"
 ```
 
-Each role file declares its own model in frontmatter. Tech Lead
-invocation is a separate dispatch with the same role contract but
-`--model opus`, and the partial-work state from the prior Dev attempt
-prepended to the task.
+Each role file declares its own model in frontmatter.
 
 For long-running dispatches, prefer backgrounded execution — the
 dispatcher releases its window immediately, and the subprocess writes

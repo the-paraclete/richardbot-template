@@ -39,10 +39,17 @@ declares its model. Suggested defaults:
 
 | Role         | Model   | What it does                                              |
 |--------------|---------|-----------------------------------------------------------|
+| triage       | haiku   | Routes work — cycle / direct-dev / exception              |
 | architect    | opus    | Designs systems; no code; outputs design docs             |
-| dev          | sonnet  | Writes tests OR code, never both same pass; tests-first   |
-| qa           | sonnet  | Verifies what was built; PASS/FAIL/NEEDS-REVISION         |
+| designer     | opus    | Interaction shape for UI-touching work                    |
+| dev          | opus    | Writes tests OR code, never both same pass; tests-first   |
+| review       | opus    | Code-quality gate on the diff; subtle-bug class           |
+| qa-tests     | sonnet  | Verifies the test suite is meaningful, not rubber-stamping |
+| qa           | sonnet  | Verifies built thing works end-to-end; Puppeteer for FE   |
+| ship         | sonnet  | Commits, pushes, opens PR, watches CI                     |
+| docs         | sonnet  | Updates stale documentation post-change                   |
+| pm           | sonnet  | Sequences dispatches, verifies done, triages friction     |
 | scan         | haiku   | Audits a code surface; finds drift, dead code, smells     |
 | postmortem   | opus    | Why-it-broke writeups; updates rules                      |
 
-Invoke: `claude --print --model sonnet "$(cat .claude/commands/dev.md)" + "<task>"`
+Invoke: `claude --print --model opus "$(cat .claude/commands/dev.md)" + "<task>"`
