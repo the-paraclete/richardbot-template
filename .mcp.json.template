@@ -1,0 +1,64 @@
+{
+  "_comment_meta": "Template for .mcp.json — Claude Code MCP server configuration. The `richardbot-init mcp` flow prompts per-server, then writes a filtered .mcp.json with only the servers you enabled. Replace placeholder package names (PACKAGE_NAME_TBD) with the verified current package from each provider's docs. Env vars resolve from .claude/env at session start.",
+
+  "mcpServers": {
+
+    "shopify-dev": {
+      "_comment": "Shopify dev-tooling — schema validation, doc search, Liquid validation. No token needed (reads public docs + schema).",
+      "command": "npx",
+      "args": ["-y", "PACKAGE_NAME_TBD-shopify-dev-mcp"],
+      "env": {}
+    },
+
+    "circleci": {
+      "_comment": "CircleCI pipeline access — build status, failure logs, flaky tests, rerun. Requires CIRCLECI_TOKEN.",
+      "command": "npx",
+      "args": ["-y", "PACKAGE_NAME_TBD-circleci-mcp"],
+      "env": {
+        "CIRCLECI_TOKEN": "${CIRCLECI_TOKEN}"
+      }
+    },
+
+    "sentry": {
+      "_comment": "Sentry error tracking — issue lookup, event payload, breadcrumbs. Requires SENTRY_AUTH_TOKEN and SENTRY_ORG.",
+      "command": "npx",
+      "args": ["-y", "PACKAGE_NAME_TBD-sentry-mcp"],
+      "env": {
+        "SENTRY_AUTH_TOKEN": "${SENTRY_AUTH_TOKEN}",
+        "SENTRY_ORG": "${SENTRY_ORG}"
+      }
+    },
+
+    "jira": {
+      "_comment": "Jira ticket access — read tickets, search projects, optional ticket creation. Requires JIRA_URL, JIRA_USER, JIRA_API_TOKEN.",
+      "command": "npx",
+      "args": ["-y", "PACKAGE_NAME_TBD-jira-mcp"],
+      "env": {
+        "JIRA_URL": "${JIRA_URL}",
+        "JIRA_USER": "${JIRA_USER}",
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+      }
+    },
+
+    "slack": {
+      "_comment": "Slack workspace access — post messages, read channels. Requires SLACK_BOT_TOKEN; SLACK_DEFAULT_CHANNEL optional.",
+      "command": "npx",
+      "args": ["-y", "PACKAGE_NAME_TBD-slack-mcp"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "SLACK_DEFAULT_CHANNEL": "${SLACK_DEFAULT_CHANNEL}"
+      }
+    },
+
+    "aws": {
+      "_comment": "AWS resource queries — S3, EC2, CloudWatch, IAM. Uses AWS_PROFILE from ~/.aws/config (SSO-recommended). Static access keys are an alternative but discouraged.",
+      "command": "npx",
+      "args": ["-y", "PACKAGE_NAME_TBD-aws-mcp"],
+      "env": {
+        "AWS_PROFILE": "${AWS_PROFILE}",
+        "AWS_REGION": "${AWS_REGION}"
+      }
+    }
+
+  }
+}
