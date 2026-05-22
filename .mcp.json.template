@@ -3,7 +3,7 @@
 
   "mcpServers": {
 
-    "shopify-dev": {
+    "shopify": {
       "_comment": "Shopify dev-tooling — schema validation, doc search, Liquid validation. No token needed (reads public docs + schema).",
       "command": "npx",
       "args": ["-y", "PACKAGE_NAME_TBD-shopify-dev-mcp"],

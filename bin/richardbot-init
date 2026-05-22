@@ -9,6 +9,8 @@
 #   richardbot-init rescan         [target-dir] [opts]            # refresh .richardbot-memory/ bug findings (periodic)
 #   richardbot-init plant          [target-dir] <name> [opts]     # write a single memory note (deliberate planting)
 #   richardbot-init pack           <list|add|remove> [target-dir] [name]   # manage rule packs
+#   richardbot-init mcp            <list|install|remove> [name...] [--keys-from <file>] [--yes] [target-dir]
+#                                                                # manage MCP server stanzas in .mcp.json
 #   richardbot-init copilot-mirror [target-dir]                   # generate .github/copilot-instructions.md + .github/instructions/
 #   richardbot-init verify         [target-dir]                   # check framework integrity (hooks + settings)
 #   richardbot-init update         [target-dir]                   # pull latest template; preserve project files
@@ -33,6 +35,15 @@
 #   pack add <name> [target-dir]          # install rule fragments from packs/<name>/
 #   pack remove <name> [target-dir]       # remove unmodified fragments from a previously-installed pack
 #
+# `mcp` modes:
+#   mcp list [target-dir]                            # list installed MCPs (reads .claude/MCPS)
+#   mcp install <name> [name...] [opts] [target-dir] # add MCP stanza(s) from .mcp.json.template, prompt for env vars
+#   mcp remove  <name> [name...] [target-dir]        # remove MCP stanza(s) from .mcp.json (env vars preserved)
+#
+# `mcp install` options:
+#   --keys-from <file>    pre-populate env-var values from a KEY=value file (skip prompts)
+#   --yes                 non-interactive: leave any unset env var blank, don't prompt
+#
 # target-dir defaults to $(pwd).
 #
 # Install footprint (three places at the repo root):
@@ -52,13 +63,198 @@ usage() {
 
 mode="${1:-help}"
 
+# ── mcp ────────────────────────────────────────────────────────────────────
+# Install / list / remove MCP server stanzas in .mcp.json from packs/mcp-<name>/.
+# Args after "mcp" are <sub> [<name>...] [--keys-from <file>] [--yes] [target-dir];
+# target defaults to pwd.
+do_mcp() {
+  shift  # drop "mcp" mode arg
+
+  local sub="${1:-list}"
+  shift || true
+
+  local keys_from=""
+  local non_interactive="0"
+  local names=()
+  local target_set="0"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keys-from) keys_from="$2"; shift 2 ;;
+      --yes)       non_interactive="1"; shift ;;
+      --target)    target="$(cd "$2" && pwd)"; target_set="1"; shift 2 ;;
+      --*)         echo "⚠ unknown mcp flag: $1" >&2; shift ;;
+      *)
+        if [ "$target_set" = "0" ] && { [ -d "$1/.claude" ] || [ -f "$1/CLAUDE.md" ]; }; then
+          target="$(cd "$1" && pwd)"
+          target_set="1"
+        else
+          names+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  local template="$TEMPLATE_ROOT/.mcp.json.template"
+  [ -f "$template" ] || { echo "⚠ No .mcp.json.template in $TEMPLATE_ROOT" >&2; exit 2; }
+
+  case "$sub" in
+    list)
+      local manifest="$target/.claude/MCPS"
+      if [ ! -f "$manifest" ]; then
+        echo "No MCP packs installed (no $manifest)."
+        echo
+        echo "Available MCP packs in $TEMPLATE_ROOT/packs/:"
+        for d in "$TEMPLATE_ROOT/packs"/mcp-*/; do
+          [ -d "$d" ] && echo "  $(basename "$d" | sed 's/^mcp-//')"
+        done
+        return 0
+      fi
+      echo "Installed MCP packs:"
+      sed 's/^/  /' "$manifest"
+      ;;
+    install)
+      [ "${#names[@]}" -gt 0 ] || { echo "⚠ Usage: richardbot-init mcp install <name> [name...] [--keys-from <file>] [--yes] [target-dir]" >&2; exit 2; }
+      [ -d "$target/.claude" ] || { echo "⚠ Target has no .claude/ — run 'init' first." >&2; exit 2; }
+
+      # Load keys from file if --keys-from given (KEY=value lines; 'export' prefix optional).
+      declare -A keys_env=()
+      if [ -n "$keys_from" ]; then
+        [ -f "$keys_from" ] || { echo "⚠ --keys-from file not found: $keys_from" >&2; exit 2; }
+        while IFS= read -r line; do
+          [ -z "$line" ] && continue
+          [ "${line#\#}" != "$line" ] && continue
+          line="${line#export }"
+          local k="${line%%=*}"
+          local v="${line#*=}"
+          v="${v#\"}"; v="${v%\"}"
+          [ -n "$k" ] && keys_env["$k"]="$v"
+        done < "$keys_from"
+      fi
+
+      local env_file="$target/.claude/env"
+      mkdir -p "$(dirname "$env_file")"
+      touch "$env_file"
+
+      local mcp_file="$target/.mcp.json"
+      local current_json='{"mcpServers": {}}'
+      if [ -f "$mcp_file" ]; then
+        current_json="$(cat "$mcp_file")"
+        if ! echo "$current_json" | jq -e '.mcpServers' >/dev/null 2>&1; then
+          current_json="$(echo "$current_json" | jq '. + {mcpServers: {}}')"
+        fi
+      fi
+
+      local template_json
+      template_json="$(cat "$template")"
+
+      for name in "${names[@]}"; do
+        local pack_dir="$TEMPLATE_ROOT/packs/mcp-$name"
+        [ -d "$pack_dir" ] || { echo "⚠ Unknown MCP: '$name' (no $pack_dir)" >&2; continue; }
+
+        local stanza
+        # If the key is absent in the template, jq must not blow up — gate the with_entries on null.
+        stanza="$(echo "$template_json" | jq --arg n "$name" 'if .mcpServers[$n] == null then null else .mcpServers[$n] | with_entries(select(.key | startswith("_comment") | not)) end')"
+        if [ "$stanza" = "null" ]; then
+          echo "⚠ '$name' is not in .mcp.json.template (skipping)" >&2
+          continue
+        fi
+
+        echo "→ Installing MCP pack: $name"
+        echo "  See packs/mcp-$name/README.md for full setup notes."
+
+        local env_keys
+        env_keys="$(echo "$stanza" | jq -r '.env // {} | keys[]')"
+
+        if [ -n "$env_keys" ]; then
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            local value=""
+            if grep -qE "^[[:space:]]*export[[:space:]]+$key=" "$env_file" 2>/dev/null; then
+              echo "  ✓ $key (already in $env_file — preserved)"
+              continue
+            elif [ -n "${keys_env[$key]:-}" ]; then
+              value="${keys_env[$key]}"
+              echo "  ✓ $key (from --keys-from)"
+            elif [ "$non_interactive" = "1" ]; then
+              echo "  ⚠ $key — non-interactive, no value provided (leaving blank)" >&2
+              value=""
+            else
+              read -r -p "  Enter $key (or blank to defer): " value
+            fi
+
+            if [ -n "$value" ]; then
+              echo "export $key=\"$value\"" >> "$env_file"
+            fi
+          done <<< "$env_keys"
+        fi
+
+        current_json="$(echo "$current_json" | jq --arg n "$name" --argjson stanza "$stanza" \
+                          '.mcpServers[$n] = $stanza')"
+
+        touch "$target/.claude/MCPS"
+        if ! grep -qxF "$name" "$target/.claude/MCPS" 2>/dev/null; then
+          echo "$name" >> "$target/.claude/MCPS"
+        fi
+
+        echo "  ✓ stanza added to $mcp_file"
+      done
+
+      echo "$current_json" | jq . > "$mcp_file"
+
+      echo
+      echo "✓ MCP install complete."
+      echo "  • $mcp_file updated"
+      echo "  • $env_file appended with new env vars (review before committing)"
+      echo "  • .claude/MCPS manifest updated"
+      echo
+      echo "Next:"
+      echo "  1. If any stanza shows PACKAGE_NAME_TBD, edit .mcp.json with the verified"
+      echo "     package name (see each pack's README for where to find it)."
+      echo "  2. Restart Claude Code so the MCP server loads."
+      echo "  3. Verify with 'richardbot-init mcp list'."
+      ;;
+    remove)
+      [ "${#names[@]}" -gt 0 ] || { echo "⚠ Usage: richardbot-init mcp remove <name> [target-dir]" >&2; exit 2; }
+      local mcp_file="$target/.mcp.json"
+      [ -f "$mcp_file" ] || { echo "⚠ No $mcp_file — nothing to remove." >&2; exit 2; }
+
+      local current_json
+      current_json="$(cat "$mcp_file")"
+      for name in "${names[@]}"; do
+        if echo "$current_json" | jq -e --arg n "$name" '.mcpServers[$n]' >/dev/null 2>&1; then
+          current_json="$(echo "$current_json" | jq --arg n "$name" 'del(.mcpServers[$n])')"
+          echo "✓ removed MCP stanza: $name"
+        else
+          echo "  (no stanza for '$name' in $mcp_file — skipping)" >&2
+        fi
+        if [ -f "$target/.claude/MCPS" ]; then
+          grep -v "^$name$" "$target/.claude/MCPS" > "$target/.claude/MCPS.tmp" 2>/dev/null || true
+          mv "$target/.claude/MCPS.tmp" "$target/.claude/MCPS"
+          [ -s "$target/.claude/MCPS" ] || rm -f "$target/.claude/MCPS"
+        fi
+      done
+
+      echo "$current_json" | jq . > "$mcp_file"
+
+      echo
+      echo "Note: env-var lines in $target/.claude/env were preserved. Edit manually if you want to remove them too."
+      ;;
+    *)
+      echo "⚠ Unknown mcp sub-command: $sub" >&2
+      echo "    Usage: richardbot-init mcp <list|install|remove> [args]" >&2
+      exit 2
+      ;;
+  esac
+}
+
 case "$mode" in
   help|--help|-h) usage ;;
 esac
 
 # `pack` takes a sub-command as $2 (list/add/remove); target is parsed inside do_pack.
 # All other modes take target as $2 (defaults to pwd).
-if [ "$mode" = "pack" ]; then
+if [ "$mode" = "pack" ] || [ "$mode" = "mcp" ]; then
   target="$(pwd)"
 else
   target="${2:-$(pwd)}"
@@ -1579,6 +1775,7 @@ case "$mode" in
   rescan)          do_rescan "$@" ;;
   plant)           do_plant "$@" ;;
   pack)            do_pack "$@" ;;
+  mcp)             do_mcp "$@" ;;
   copilot-mirror)  do_copilot_mirror ;;
   import-overview) do_import_overview "$@" ;;
   verify)          do_verify ;;
