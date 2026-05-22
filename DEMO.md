@@ -1,6 +1,6 @@
 # richardbot-template — live demo script
 
-Runbook for kicking the tires in front of an audience. Eight acts, ~15 minutes total. Each act:
+Runbook for kicking the tires in front of an audience. Eleven acts, ~20 minutes total. Each act:
 
 - **Setup** — what to have on screen before you talk
 - **Say** — the one-line frame
@@ -8,7 +8,7 @@ Runbook for kicking the tires in front of an audience. Eight acts, ~15 minutes t
 - **Watch for** — the moment the audience should notice
 - **Tire-kick** — where this honestly breaks down
 
-Lightning version: do Acts 1, 4, 5 only (5 minutes). Deep version: add Act 9.
+Lightning version: do Acts 1, 4, 5 only (5 minutes). Deep version: add Acts 9 + 10 + 11 to walk the dev cycle, lease primitive, and MCP install.
 
 ---
 
@@ -271,3 +271,120 @@ Their answer is the seed for their first custom rule fragment.
 | Lightning | 1, 4, 5 | 5 min |
 | Standard | 1-8 | 15 min |
 | Deep | 1-9 + Q&A | 25 min |
+
+## Act 9 — The dev cycle eats its own dogfood (3 min)
+
+**Setup.** A real client repo with richardbot installed, a bug ticket in
+your tracker, and a clean working tree on main. Bonus: have `mcp-jira`
+installed so the triage step can pull the ticket without leaving chat.
+
+**Say.** *"Watch the cycle handle a real ticket end-to-end. Triage routes
+it. Architect designs. Dev writes tests then code. Three gates fire before
+human UAT. Ship lands the PR. Docs sweep stale references. Each step is
+its own subprocess with its own model — you see what the cycle picks for
+each role."*
+
+**Run.** In Claude Code, type the ticket reference:
+
+```
+fix the cart 422 bug, ticket PROJ-1234
+```
+
+**Watch for.** The agent should:
+
+1. Hit Triage (haiku) — returns `VERDICT: CYCLE`, names the first dispatch
+2. Hit Architect (opus) — produces a design doc; surfaces back for shape review
+3. Hit Dev (opus) in two phases (tests first, code second) — `git status`
+   shows the diff
+4. Hit `/review` (opus) — PASS / NEEDS-REVISION verdict at file:line
+5. Hit `qa-tests` (sonnet) — verifies tests are meaningful, not rubber-stamp
+6. Hit `qa` (sonnet, +Puppeteer if FE) — end-to-end smoke
+7. Pause for UAT (you) — the operator nod
+8. Ship (sonnet) commits, pushes, opens PR with the body shape
+9. Docs (sonnet) sweeps for stale references
+
+**Tire-kick.** *"The cycle is opinionated about models — opus where
+correctness matters (architect, dev, review, postmortem), sonnet where
+verification is mechanical (qa, ship, docs), haiku where speed matters
+(triage, scan). Override per-project by editing the role files' model
+frontmatter."*
+
+---
+
+## Act 10 — Cross-window safety with leases (1 min)
+
+**Setup.** Two terminal windows, both running Claude Code in the same
+repo.
+
+**Say.** *"When you have multiple paraclete windows running on the same
+repo, you want them to coordinate. The lease primitive is a minimal
+filesystem-based marker — one window acquires a slug, others can check
+that slug to see what's running and how long it's been live."*
+
+**Run.** Window 1:
+
+```sh
+./.claude/hooks/lease-acquire.sh slice-7-refactor "extracting cart utils"
+./.claude/hooks/lease-heartbeat.sh slice-7-refactor   # call from your long loop
+```
+
+Window 2 (any window, any time):
+
+```sh
+./.claude/hooks/lease-check.sh                          # list all leases
+./.claude/hooks/lease-check.sh slice-7-refactor         # report just that one
+./.claude/hooks/lease-check.sh slice-7-refactor --json  # machine-readable
+```
+
+**Watch for.** Window 2 shows the slug, status (active / stale / corrupt),
+age in minutes, and the intent string from window 1. After 30 minutes
+without a heartbeat, status flips to `stale` — a reaper script (per-team
+setup, not in the skeleton) can clean those up.
+
+**Tire-kick.** *"This is purely cooperative — leases don't actually
+block anyone. They surface what's in flight. If two windows acquire the
+same slug, the second one exits 1. Beyond that, it's on the operator
+to honor the signal. Good enough for the 1-2 paraclete window case."*
+
+---
+
+## Act 11 — Opt into MCP integrations (1 min)
+
+**Setup.** A repo with richardbot installed but no `.mcp.json` yet. Have
+a CircleCI personal API token in the clipboard for the demo.
+
+**Say.** *"Six MCP server packs ship with the skeleton. Each one's
+README documents what it gives the agent, how to provision the token,
+security gravity, and when not to install. The install flow prompts
+per-server."*
+
+**Run.** Interactive install:
+
+```sh
+richardbot-init mcp install circleci
+# Prompted: Enter CIRCLECI_TOKEN (or blank to defer): <paste>
+```
+
+Or non-interactive (CI setup):
+
+```sh
+richardbot-init mcp install circleci --keys-from /path/to/keys.env --yes
+```
+
+Verify:
+
+```sh
+richardbot-init mcp list
+cat .mcp.json | jq .mcpServers
+```
+
+**Watch for.** A new `.mcp.json` with the circleci stanza, `.claude/env`
+appended with `export CIRCLECI_TOKEN=...`, and `.claude/MCPS` recording
+the install. Restart Claude Code; the agent gains MCP tools whose names
+begin with `mcp__circleci__`.
+
+**Tire-kick.** *"Each pack's README has a 'when NOT to install' section.
+The AWS pack in particular has the heaviest security warnings — never
+grant `AdministratorAccess` to an agent profile; default to
+`ReadOnlyAccess`. The skeleton can't enforce that — it's on the
+operator to read the warnings."*
