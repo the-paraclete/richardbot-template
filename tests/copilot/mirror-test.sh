@@ -98,4 +98,41 @@ grep -q 'YYYY-MM-DD' "$MAIN" || fail "preamble lost the YYYY-MM-DD digest format
 grep -qi 'Copilot' "$README" || fail ".richardbot-memory/README.md missing Copilot consumers note"
 pass "f. README digest format matches preamble; Copilot consumers note present"
 
+# ── g. NO-SENTINEL PRESERVATION: a pre-existing copilot-instructions.md with ─
+#       NO sentinel (a repo that already used Copilot) must NOT be clobbered.
+#       A bare `init` preserves it verbatim; the next `copilot-mirror` wraps it
+#       above a freshly-inserted sentinel and appends the generated region. ──
+TARGET2="$TEST_TMP/preexisting"
+mkdir -p "$TARGET2/.github"
+NS_MARKER="PREEXISTING-COPILOT-MARKER-$$-must-survive"
+cat > "$TARGET2/.github/copilot-instructions.md" <<NSEOF
+# Our existing Copilot instructions
+
+$NS_MARKER
+
+We already use Copilot in this repo and this file predates richardbot.
+NSEOF
+
+MAIN2="$TARGET2/.github/copilot-instructions.md"
+
+# g.1 — a bare init must NOT truncate the pre-existing, no-sentinel file.
+bash "$BIN" init "$TARGET2" > /dev/null 2>&1 || fail "init on a repo with a pre-existing copilot file failed"
+grep -qF "$NS_MARKER" "$MAIN2" || fail "no-sentinel clobber: bare init WIPED a pre-existing copilot-instructions.md"
+pass "g.1 bare init preserves a pre-existing no-sentinel copilot file"
+
+# g.2 — copilot-mirror treats the full existing content as the preamble:
+#        marker survives, a sentinel is now inserted, and the generated region
+#        lands below it (alwaysApply conventions.md body folds in).
+bash "$BIN" copilot-mirror "$TARGET2" > /dev/null 2>&1 || fail "copilot-mirror on no-sentinel file failed"
+grep -qF "$NS_MARKER" "$MAIN2" || fail "no-sentinel clobber: copilot-mirror DISCARDED the existing content"
+grep -qF "$SENTINEL" "$MAIN2" || fail "copilot-mirror did not insert a sentinel into the no-sentinel file"
+# marker is above the freshly-inserted sentinel (it's the preserved preamble)
+PRE2="$(awk -v s="$SENTINEL" 'index($0,s){exit} {print}' "$MAIN2")"
+echo "$PRE2" | grep -qF "$NS_MARKER" || fail "preserved content landed below the sentinel instead of above"
+# generated region refreshed below the sentinel
+POST2="$(awk -v s="$SENTINEL" 'f{print} index($0,s){f=1}' "$MAIN2")"
+echo "$POST2" | grep -q "Smallest reversible" \
+  || fail "generated region missing below sentinel after wrapping a no-sentinel file"
+pass "g.2 copilot-mirror wraps existing content above an inserted sentinel + regenerates below"
+
 echo "mirror-test.sh PASS"

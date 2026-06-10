@@ -323,8 +323,16 @@ do_init() {
   # don't depend on any rules existing, so a bare init yields a working Copilot
   # discipline file immediately. The sentinel splits the preserved preamble
   # (above) from the generated region (below); 'copilot-mirror' fills the latter.
+  # NEVER clobber a pre-existing copilot-instructions.md. A repo that already
+  # uses Copilot sails past the CLAUDE.md/.claude/ install guard above, so guard
+  # the write here too: if the file exists, leave it untouched. The next
+  # 'copilot-mirror' wraps its full content as the preserved preamble above a
+  # freshly-inserted sentinel — the hand-edits-survive thesis applied to a
+  # whole pre-existing file.
   local copilot_sentinel='<!-- BEGIN richardbot-mirror — generated; everything below is overwritten on re-run -->'
-  if [ -f "$TEMPLATE_ROOT/assets/copilot-preamble.md" ]; then
+  if [ -f "$target/.github/copilot-instructions.md" ]; then
+    echo "  preserving existing .github/copilot-instructions.md (run 'copilot-mirror' to fold rules in below a sentinel)"
+  elif [ -f "$TEMPLATE_ROOT/assets/copilot-preamble.md" ]; then
     mkdir -p "$target/.github"
     {
       cat "$TEMPLATE_ROOT/assets/copilot-preamble.md"
@@ -1795,10 +1803,15 @@ if os.path.isdir(mem_dir):
             glob_memory += 1
 
 # ── Resolve the preserved preamble (everything above the sentinel) ──────────
-# If the file already exists with a sentinel, keep everything above it VERBATIM
-# (the static preamble plus any hand edits). Otherwise seed from the shipped
-# asset. This is the clobber fix: a re-run never wipes hand-added content above
-# the sentinel.
+# Priority, never destroying user content:
+#   1. File exists WITH our sentinel → keep everything above it VERBATIM
+#      (static preamble plus any hand edits).
+#   2. File exists WITHOUT our sentinel → it's a hand-written / pre-existing
+#      Copilot file. Treat its FULL content as the preamble, preserved verbatim
+#      above a freshly-inserted sentinel. This matches the bare-init guard that
+#      refuses to clobber a pre-existing file — same "never destroy a user
+#      file" thesis, applied here.
+#   3. File absent → seed from the shipped asset (or a minimal fallback).
 preamble_preserved = None
 if os.path.exists(main_path):
     with open(main_path) as f:
@@ -1806,6 +1819,9 @@ if os.path.exists(main_path):
     idx = existing.find(SENTINEL)
     if idx != -1:
         preamble_preserved = existing[:idx].rstrip("\n")
+    elif existing.strip():
+        # No sentinel but real content: preserve the whole file as the preamble.
+        preamble_preserved = existing.rstrip("\n")
 
 if preamble_preserved is None:
     if os.path.exists(preamble_src):
