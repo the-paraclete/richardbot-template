@@ -166,23 +166,45 @@ jobs:
 
 ---
 
-## Act 6 — The Copilot mirror (1 min)
+## Act 6 — The Copilot mirror: same discipline, second target (2 min)
 
-**Setup.** Show `.github/copilot-instructions.md` is auto-generated.
+**Setup.** Show `.github/copilot-instructions.md` is the discipline file Copilot loads on every session — and that a bare `init` already produced it, no `--full` needed.
 
-**Say.** *"Same rule corpus, different consumers. Claude Code reads `.claude/rules/`. GitHub Copilot reads `.github/copilot-instructions.md` + `.github/instructions/*.instructions.md`. Both are mirrored from one source."*
+**Say.** *"Same discipline, two delivery mechanisms. Claude Code gets the honesty/completion rules and memory protocol automatically — hooks plus always-loaded fragments. Copilot gets the identical discipline from one always-loaded file plus a memory protocol it runs by hand. The top of the file is the crown jewel; the bottom is generated."*
 
-**Run.**
+**Run — the preamble sits above the sentinel.**
 
 ```bash
 richardbot-init copilot-mirror
-ls .github/instructions/ | head -10
-head -30 .github/copilot-instructions.md
+head -60 .github/copilot-instructions.md
+grep -n 'BEGIN richardbot-mirror' .github/copilot-instructions.md
 ```
 
-**Watch for.** One source-of-truth, two consumers. Each `applyTo:` glob in `.github/instructions/` targets a specific surface — Copilot loads the right fragment when you're editing in that dir.
+**Watch for.** `§1` (honesty + completion — *"Never claim an action you did not take"*, *"A plan is not a deliverable"*) and `§2` (memory protocol) appear **above** the `<!-- BEGIN richardbot-mirror … -->` sentinel; the folded rules + "Known findings" appear below it.
 
-**Tire-kick.** *"Copilot's `applyTo` is glob-only; it doesn't have prompt-keyword triggers like our hook. So 'prompt-only' fragments get folded into the always-loaded file, which is slightly wasteful for Copilot context."*
+**Run — the preamble survives a re-run (the clobber fix).**
+
+```bash
+# Hand-edit a line into the preserved region, above the sentinel:
+sed -i '1a > Project note: cart mutations go through the cart store.' .github/copilot-instructions.md
+richardbot-init copilot-mirror          # regenerate
+grep -q 'cart mutations go through' .github/copilot-instructions.md && echo "SURVIVED"
+```
+
+**Watch for.** `SURVIVED` — the hand edit above the sentinel is preserved while the generated region refreshes. (Before this fix, `copilot-mirror` opened the file in write-mode and clobbered the whole thing every run.)
+
+**Run — the memory protocol's WRITE side (what Copilot does by hand).**
+
+```bash
+# Copilot has no hook; §2b instructs it to record learnings manually:
+echo "$(date +%F) learning auth-redirect_$(date +%F).md — login bounces on stale CSRF token" \
+  | cat - .richardbot-memory/_recent.md > /tmp/_r && mv /tmp/_r .richardbot-memory/_recent.md
+head -3 .richardbot-memory/_recent.md
+```
+
+**Watch for.** The digest line lands at the top of `_recent.md` in the same `YYYY-MM-DD <type> <filename> — <summary>` format a Claude session uses. Act 4 showed the **read** side (AI answers from memory); this is the **write** side — and for Copilot it's manual, per `.github/copilot-instructions.md` §2.
+
+**Tire-kick.** *"Copilot's `applyTo` is glob-only; no prompt-keyword triggers like our hook, so 'prompt-only' fragments fold into the always-loaded file. And the memory WRITE side is on the human-plus-Copilot to actually do — nothing enforces it the way the hook enforces the read side for Claude Code. The preamble §2 is the reminder; discipline is still the primary defense."*
 
 ---
 

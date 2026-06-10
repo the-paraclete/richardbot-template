@@ -48,3 +48,24 @@ The `prompt-fragment-loader.sh` hook reads `.richardbot-memory/*.md`
 exactly the same way it reads `.claude/rules/*.md` — frontmatter
 triggers, body injection. A memory note is just a rule fragment with a
 different filesystem home.
+
+## Copilot consumers
+
+This directory is dual-target. Claude Code reads it automatically via the
+`prompt-fragment-loader.sh` hook (above). GitHub Copilot reads and writes
+it **by hand**, following `.github/copilot-instructions.md` §2 — the
+discipline file that ships at the top of every Copilot session.
+
+Same files, same `_recent.md` digest format. The digest line format the
+Copilot preamble §2b instructs is identical to the one above:
+
+```
+YYYY-MM-DD <type> <filename> — <one-line summary>
+```
+
+So a note written by a Claude session and a note written by a Copilot
+session land in the same place, in the same shape. `copilot-mirror` also
+folds these notes into a "Known findings" section of
+`.github/copilot-instructions.md` (below the sentinel) so Copilot can
+answer from already-discovered findings; the *write* side is the manual
+protocol in §2.
